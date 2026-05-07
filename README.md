@@ -1,94 +1,117 @@
-# WarMachine (XIAO ESP32-C5 + XIAO ESP32-C6)
+# WarMachine (ESP-IDF) 🚀
 
-## Cel
-Układ dwóch płytek:
-- `C6`: GPS bridge
-- `C5`: Wi‑Fi scanner + SD logger
+Projekt został przebudowany na **czyste ESP-IDF** (bez Arduino).
 
-Po starcie urządzenie zbiera sieci Wi‑Fi i zapisuje je z pozycją GPS do CSV.
+## Struktura repo
 
-## Finalne połączenia
+- `fw_c6_idf/` -> firmware dla XIAO ESP32-C6 (GPS bridge)
+- `fw_c5_idf/` -> firmware dla XIAO ESP32-C5 (Wi‑Fi scan + SD logger)
 
-### XIAO <-> XIAO
-1. `C6 D0 (TX) -> C5 D1 (RX)`
-2. `C5 D0 (TX) -> C6 D1 (RX)` (opcjonalnie, zalecane)
-3. `C6 GND <-> C5 GND` (obowiązkowo)
+## Wiring (final)
 
-Nie łącz:
-- `5V C6` z `5V C5`, jeśli oba zasilasz osobno po USB.
+### XIAO C6 <-> XIAO C5
+| C6 | C5 | Opis |
+|---|---|---|
+| `D0 (TX)` | `D1 (RX)` | GPS data C6 -> C5 |
+| `D1 (RX)` | `D0 (TX)` | opcjonalnie (2-way) |
+| `GND` | `GND` | obowiązkowo |
 
-### C6 <-> GPS
-1. `GPS TX -> C6 D7 (RX)`
-2. `GPS RX <- C6 D6 (TX)` (opcjonalnie)
-3. `GPS GND -> C6 GND`
-4. `GPS VCC -> C6 3V3` (jeśli Twój moduł GPS wspiera 3.3V)
+Nie łącz `5V <-> 5V`, jeśli oba zasilasz osobno po USB.
 
-### C5 <-> SD (SPI)
-1. `SD SCK -> C5 D8`
-2. `SD MISO -> C5 D9`
-3. `SD MOSI -> C5 D10`
-4. `SD CS -> C5 D2`
-5. `SD GND -> C5 GND`
-6. `SD VCC -> C5 3V3` (lub wg spec modułu)
+### GPS -> C6
+| GPS | C6 |
+|---|---|
+| `TX` | `D7 (RX)` |
+| `RX` | `D6 (TX)` (opcjonalnie) |
+| `GND` | `GND` |
+| `VCC` | `3V3` (jeśli moduł wspiera) |
 
-## Firmware
+### SD -> C5 (SPI)
+| SD | C5 |
+|---|---|
+| `SCK` | `D8` |
+| `MISO` | `D9` |
+| `MOSI` | `D10` |
+| `CS` | `D2` |
+| `GND` | `GND` |
+| `VCC` | `3V3` lub wg modułu |
 
-- `firmware/c6_gps_bridge/c6_gps_bridge.ino`
-- `firmware/c5_wardrive_logger/c5_wardrive_logger.ino`
+## Co robi software
 
-### Co robi C6
-- Odczytuje GPS z UART (`D7/D6`).
-- Parsuje przez `TinyGPSPlus`.
-- Co 1 s wysyła do C5:
+### `fw_c6_idf`
+- czyta NMEA z GPS po UART,
+- parsuje podstawowe `RMC/GGA`,
+- wysyła co 1s linię do C5:
 `GPS,msgMs,lat,lon,alt,sats,hdop,date,time,valid`
 
-### Co robi C5
-- Odbiera ramki GPS z C6 przez UART (`D1/D0`).
-- Skanuje Wi‑Fi co 5 s.
-- Zapisuje CSV na SD: `/wardrive.csv`.
+### `fw_c5_idf`
+- odbiera linie GPS z C6 po UART,
+- skanuje Wi‑Fi co 5s,
+- dopisuje rekordy do `/sdcard/wardrive.csv`.
 
-## Flash krok po kroku (Arduino IDE 2.x)
+## Wymagania
 
-### 1) Przygotowanie
-1. Zainstaluj `Arduino IDE 2.x`.
-2. W `Boards Manager` zainstaluj `esp32 by Espressif Systems`.
-3. W `Library Manager` zainstaluj `TinyGPSPlus`.
+1. ESP-IDF `v5.x` (zalecane).
+2. Python + narzędzia IDF (`idf.py`).
+3. Dwa kable USB data.
 
-### 2) Flash C6
-1. Podłącz do USB tylko `XIAO ESP32-C6`.
-2. Otwórz `firmware/c6_gps_bridge/c6_gps_bridge.ino`.
-3. Ustaw:
-- `Tools -> Board -> XIAO ESP32C6`
-- `Tools -> Port -> port C6`
-4. Kliknij `Upload`.
-5. `Serial Monitor` 115200 i sprawdź:
-- `[C6] GPS bridge started`
-- `[C6->C5] GPS,...`
+## Instalacja ESP-IDF (skrót)
 
-### 3) Flash C5
-1. Podłącz do USB tylko `XIAO ESP32-C5`.
-2. Otwórz `firmware/c5_wardrive_logger/c5_wardrive_logger.ino`.
-3. Ustaw:
-- `Tools -> Board -> XIAO ESP32C5`
-- `Tools -> Port -> port C5`
-4. Kliknij `Upload`.
-5. `Serial Monitor` 115200 i sprawdź:
-- `[C5] SD init OK`
-- `[C5] Wardrive logger started`
-- `[C5] GPS update: GPS,...`
-- `[C5] Logged N AP entries`
+Najprościej:
+1. Zainstaluj ESP-IDF wg oficjalnej instrukcji Espressif (installer lub manual).
+2. Aktywuj środowisko:
+   - macOS/Linux: `source ~/esp/esp-idf/export.sh`
+3. Sprawdź: `idf.py --version`
 
-### 4) Gdy upload nie działa
-1. Zrób podwójny reset płytki (bootloader mode).
-2. Spróbuj upload ponownie.
+## Build i flash: C6
 
-## Test end-to-end
-1. Zasil osobno oba XIAO po USB.
-2. Sprawdź UART i GND między płytkami.
+1. Wejdź do projektu:
+   - `cd /Users/dominikhrycaj/Documents/GitHub/WarMachine/fw_c6_idf`
+2. Ustaw target:
+   - `idf.py set-target esp32c6`
+3. Zbuduj:
+   - `idf.py build`
+4. Flash:
+   - `idf.py -p /dev/cu.usbmodemXXXX flash`
+5. Monitor:
+   - `idf.py -p /dev/cu.usbmodemXXXX monitor`
+
+Oczekiwany log:
+- `C6 GPS bridge started`
+- linie `GPS,...`
+
+## Build i flash: C5
+
+1. Wejdź do projektu:
+   - `cd /Users/dominikhrycaj/Documents/GitHub/WarMachine/fw_c5_idf`
+2. Ustaw target:
+   - `idf.py set-target esp32c5`
+3. Zbuduj:
+   - `idf.py build`
+4. Flash:
+   - `idf.py -p /dev/cu.usbmodemYYYY flash`
+5. Monitor:
+   - `idf.py -p /dev/cu.usbmodemYYYY monitor`
+
+Oczekiwany log:
+- `C5 logger started`
+- `Logged N AP entries`
+
+## Szybki test end-to-end
+
+1. Zasil oba XIAO osobno po USB.
+2. Sprawdź połączenia `D0/D1 + GND` między płytkami.
 3. Wystaw GPS na zewnątrz.
-4. Po kilkudziesięciu sekundach sprawdź na SD plik `wardrive.csv`.
+4. Po chwili sprawdź kartę SD:
+   - plik `/wardrive.csv`
+
+## Czyszczenie buildów
+
+- w `fw_c6_idf`: `idf.py fullclean`
+- w `fw_c5_idf`: `idf.py fullclean`
 
 ## Źródła
+
 - https://wiki.seeedstudio.com/xiao_esp32c5_getting_started/
 - https://wiki.seeedstudio.com/xiao_esp32c6_getting_started/
 - https://wiki.seeedstudio.com/xiao_esp32c5_pin_multiplexing/
