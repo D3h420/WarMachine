@@ -1,5 +1,6 @@
 # WarMachine 🚀
 <img width="1983" height="793" alt="WarMachine" src="https://github.com/user-attachments/assets/d3dbda82-bfa6-4225-8157-7a5522b26137" />
+
 Dual-band wardriving setup based on 2x ESP32 - Xiao C5 && C6 + GPS + SD
 
 ## Repository Structure
