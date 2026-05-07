@@ -25,6 +25,22 @@ Dlaczego taki podział:
 
 ## 4) Wiring (sprawdzone mapowanie pinów)
 
+## 4.0 Ostateczne połączenie XIAO <-> XIAO (Twoja wersja)
+Założenia:
+- `D6/D7` na C6 są zajęte przez GPS.
+- Oba XIAO zasilasz osobno przez USB (bez mostka `5V<->5V`).
+
+Połącz tylko to:
+1. `C6 D0 (TX) -> C5 D1 (RX)`
+2. `C6 D1 (RX) <- C5 D0 (TX)` (opcjonalnie, ale zalecane dla 2-kierunkowej komunikacji)
+3. `C6 GND <-> C5 GND` (obowiązkowo)
+
+Nie łącz:
+- `5V C6` z `5V C5` (przy osobnym zasilaniu USB).
+
+Uwaga:
+- `D6/D7` to domyślne piny UART na pinoucie, ale w tym projekcie używamy remap UART w firmware na `D0/D1`, żeby nie kolidować z GPS.
+
 ## 4.1 XIAO C5 <-> moduł microSD (SPI)
 | Funkcja | microSD module | XIAO ESP32-C5 | Uwagi |
 |---|---|---|---|
@@ -47,20 +63,23 @@ Dlaczego taki podział:
 ## 4.3 Połączenie między C6 i C5 (UART)
 | Funkcja | XIAO ESP32-C6 | XIAO ESP32-C5 | Uwagi |
 |---|---|---|---|
-| TX->RX | D6 (TX) | D7 (RX) | Główny kanał przesyłu pozycji GPS |
-| RX<-TX (opcjonalnie) | D7 (RX) | D6 (TX) | Przydatne do ACK/komend/debug |
+| TX->RX | D0 (TX) | D1 (RX) | Główny kanał przesyłu pozycji GPS |
+| RX<-TX (opcjonalnie) | D1 (RX) | D0 (TX) | Przydatne do ACK/komend/debug |
 | Masa | GND | GND | Bez wspólnej masy UART będzie niestabilny |
+
+Uwaga praktyczna:
+- `D6/D7` na C6 są już zajęte przez GPS, więc link C6<->C5 celowo przeniesiony na `D0/D1`.
 
 ## 5) Weryfikacja konfliktów pinów
 
 ### C5 (Wi-Fi + SD + link do C6)
-- Zajęte: `D2`, `D6`, `D7`, `D8`, `D9`, `D10`
-- Wolne: `D0`, `D1`, `D3`, `D4`, `D5`
+- Zajęte: `D0`, `D1`, `D2`, `D8`, `D9`, `D10`
+- Wolne: `D3`, `D4`, `D5`, `D6`, `D7`
 - Brak konfliktu z mapą SPI/UART.
 
 ### C6 (GPS + link do C5)
-- Zajęte: `D6`, `D7` (+ opcjonalnie `D1` dla PPS)
-- Wolne: `D0`, `D2`, `D3`, `D4`, `D5`, `D8`, `D9`, `D10`
+- Zajęte: `D0`, `D1`, `D6`, `D7`
+- Wolne: `D2`, `D3`, `D4`, `D5`, `D8`, `D9`, `D10`
 - Uwaga: `GPIO3` i `GPIO14` są związane z przełączaniem anteny RF (nie używaj ich przypadkowo do innych krytycznych funkcji).
 
 ## 6) Zasilanie z powerbanku (jedno USB do dowolnej płytki)
