@@ -63,19 +63,35 @@ Dlaczego taki podział:
 - Wolne: `D0`, `D2`, `D3`, `D4`, `D5`, `D8`, `D9`, `D10`
 - Uwaga: `GPIO3` i `GPIO14` są związane z przełączaniem anteny RF (nie używaj ich przypadkowo do innych krytycznych funkcji).
 
-## 6) Zasilanie w aucie (ważne)
+## 6) Zasilanie z powerbanku (jedno USB do dowolnej płytki)
 
-### Zalecany tor zasilania
-1. `12V/ACC` (po zapłonie) ->
-2. przetwornica buck `12V -> 5V` automotive (stabilna, filtrująca zakłócenia) ->
-3. rozdział `5V` do obu XIAO (pin 5V) ->
-4. peryferia z 3V3 z odpowiedniego XIAO lub z osobnego stabilizatora 3.3V, jeśli moduły są prądożerne.
+### Wymaganie użytkowe
+Masz podpiąć jeden kabel USB-C z powerbanku do `C5` **albo** do `C6`, a cały układ ma działać.
 
-### Dobre praktyki
-- Dodaj bezpiecznik na linii zasilania.
-- Dodaj filtrację (kondensatory low-ESR blisko modułów).
-- Przewody UART/SPI prowadź możliwie krótko.
-- W aucie unikaj "latających" przewodów bez mocowania (wibracje + resety).
+### Najprostsze i skuteczne połączenie
+Połącz między płytkami:
+- `5V (C5) <-> 5V (C6)`
+- `GND (C5) <-> GND (C6)`
+
+Wtedy:
+- gdy USB podłączysz do `C5`, zasilisz też `C6`,
+- gdy USB podłączysz do `C6`, zasilisz też `C5`.
+
+```text
+Powerbank USB-C -> [XIAO C5 lub XIAO C6]
+                     |            |
+                    5V ---------- 5V
+                    GND --------- GND
+```
+
+### Bardzo ważne ograniczenie (backfeed)
+- Nie podłączaj jednocześnie obu płytek do dwóch różnych źródeł USB 5V (np. dwóch portów PC) przy zwartym `5V<->5V`.
+- Jeżeli chcesz czasem debugować/programować obie płytki jednocześnie po USB, dodaj izolację zasilania (np. Schottky/power-path) albo rozłączany mostek 5V.
+
+### Dobre praktyki dla powerbanku
+- Użyj krótkich kabli USB-C i solidnych połączeń masy.
+- Zostaw zapas prądowy powerbanku (minimum ~1 A ciągłego oddawania).
+- Jeśli moduł GPS/SD zachowuje się niestabilnie, dołóż kondensator 100 uF blisko zasilania modułu.
 
 ## 7) Plan uruchomienia i testów (hardware first)
 
@@ -107,7 +123,7 @@ Dlaczego taki podział:
 ## 9) Co trzeba potwierdzić przed lutowaniem (blokery)
 1. Dokładny model modułu GPS (np. NEO-6M/NEO-M8N/ATGM336H).
 2. Dokładny model slotu SD (goły socket vs moduł z konwerterem poziomów).
-3. Czy chcesz zasilanie po `ACC` (po zapłonie), czy stałe 12V + soft power-off.
+3. Czy będziesz kiedykolwiek podpinać obie płytki USB naraz do debugowania.
 4. Czy potrzebujesz tylko GPS->C5 (1 kierunek), czy pełny UART 2-kierunkowy.
 
 ## 10) Źródła pinout/spec (oficjalne)
