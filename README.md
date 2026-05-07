@@ -1,6 +1,5 @@
 # WarMachine (ESP-IDF) 🚀
-
-Projekt został przebudowany na **czyste ESP-IDF** (bez Arduino).
+<img width="1983" height="793" alt="WarMachine" src="https://github.com/user-attachments/assets/4f60f781-d4ac-49ae-9ad4-b117a00b9394" />
 
 ## Struktura repo
 
@@ -116,9 +115,3 @@ Oczekiwany log:
 - https://wiki.seeedstudio.com/xiao_esp32c6_getting_started/
 - https://wiki.seeedstudio.com/xiao_esp32c5_pin_multiplexing/
 - https://wiki.seeedstudio.com/xiao_pin_multiplexing_esp32c6/
-
----
-
-<p align="center">
-  <img src="./assets/labs-logo-transparent.png" alt="LABS" width="320" />
-</p>
