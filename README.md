@@ -119,7 +119,3 @@ Expected logs:
 - https://wiki.seeedstudio.com/xiao_pin_multiplexing_esp32c6/
 
 ---
-
-<p align="center">
-  <img src="./assets/labs-logo-transparent.png" alt="LABS" width="320" />
-</p>
