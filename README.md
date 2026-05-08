@@ -5,8 +5,8 @@ Dual-band wardriving setup based on 2x ESP32 - Xiao C5 && C6 + GPS + SD
 
 ## Repository Structure
 
-- `fw_c6_idf/` -> firmware for XIAO ESP32-C6 (GPS bridge)
-- `fw_c5_idf/` -> firmware for XIAO ESP32-C5 (Wi‑Fi scanner + SD logger)
+- `xiao_c6/` -> firmware for XIAO ESP32-C6 (GPS bridge)
+- `xiao_c5/` -> firmware for XIAO ESP32-C5 (Wi‑Fi scanner + SD logger)
 
 ## Wiring (Final)
 
@@ -39,13 +39,13 @@ Do not connect `5V <-> 5V` if both boards are powered separately via USB.
 
 ## Software Overview
 
-### `fw_c6_idf`
+### `xiao_c6`
 - reads NMEA from GPS over UART,
 - parses basic `RMC/GGA` data,
 - sends one line every second to C5:
 `GPS,msgMs,lat,lon,alt,sats,hdop,date,time,valid`
 
-### `fw_c5_idf`
+### `xiao_c5`
 - receives GPS lines from C6 over UART,
 - scans Wi‑Fi every 5s,
 - appends records to `/sdcard/wardrive.csv`.
@@ -67,7 +67,7 @@ Do not connect `5V <-> 5V` if both boards are powered separately via USB.
 ## Build & Flash: C6
 
 1. Go to the project folder:
-   - `cd /Users/dominikhrycaj/Documents/GitHub/WarMachine/fw_c6_idf`
+   - `cd /Users/dominikhrycaj/Documents/GitHub/WarMachine/xiao_c6`
 2. Set target:
    - `idf.py set-target esp32c6`
 3. Build:
@@ -84,7 +84,7 @@ Expected logs:
 ## Build & Flash: C5
 
 1. Go to the project folder:
-   - `cd /Users/dominikhrycaj/Documents/GitHub/WarMachine/fw_c5_idf`
+   - `cd /Users/dominikhrycaj/Documents/GitHub/WarMachine/xiao_c5`
 2. Set target:
    - `idf.py set-target esp32c5`
 3. Build:
@@ -108,8 +108,8 @@ Expected logs:
 
 ## Clean Build Artifacts
 
-- in `fw_c6_idf`: `idf.py fullclean`
-- in `fw_c5_idf`: `idf.py fullclean`
+- in `xiao_c6`: `idf.py fullclean`
+- in `xiao_c5`: `idf.py fullclean`
 
 ## Sources
 
