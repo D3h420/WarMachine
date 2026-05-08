@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <math.h>
 #include <sys/unistd.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -32,11 +33,16 @@
 #define SD_CS_GPIO       2
 
 #define SCAN_PERIOD_MS   5000
+#define SD_RETRY_MS      2000
+#define GPS_WAIT_POLL_MS 250
+#define GPS_WAIT_LOG_MS  3000
+#define GPS_STALE_MS     5000
 
 static const char *TAG = "C5_LOGGER";
 static const char *MOUNT_POINT = "/sdcard";
 static const char *CSV_PATH = "/sdcard/wardrive.csv";
 static bool g_sd_ready = false;
+static int64_t g_last_gps_rx_local_ms = 0;
 
 typedef struct {
     bool valid;
@@ -164,6 +170,62 @@ static void parse_gps_line(const char *line) {
     strncpy(g_gps.time_utc, t[7], sizeof(g_gps.time_utc) - 1);
     g_gps.time_utc[sizeof(g_gps.time_utc) - 1] = '\0';
     g_gps.valid = atoi(t[8]) == 1;
+    g_last_gps_rx_local_ms = esp_log_timestamp();
+}
+
+static bool gps_fix_ready(void) {
+    bool coords_present = (fabsf(g_gps.lat) > 0.000001f) || (fabsf(g_gps.lon) > 0.000001f);
+    return g_gps.valid && (g_gps.sats > 0) && coords_present;
+}
+
+static void wait_for_sd_ready(void) {
+    int attempt = 0;
+    while (!g_sd_ready) {
+        attempt++;
+        sdmmc_card_t *card = NULL;
+        esp_err_t sd_ret = init_sd_spi(&card);
+        if (sd_ret == ESP_OK) {
+            g_sd_ready = true;
+            sdmmc_card_print_info(stdout, card);
+            ensure_csv_header();
+            ESP_LOGI(TAG, "SD ready after %d attempt(s)", attempt);
+            return;
+        }
+
+        ESP_LOGW(TAG, "SD init attempt %d failed: %s (0x%x), retry in %d ms",
+                 attempt, esp_err_to_name(sd_ret), (unsigned int)sd_ret, SD_RETRY_MS);
+        vTaskDelay(pdMS_TO_TICKS(SD_RETRY_MS));
+    }
+}
+
+static void wait_for_gps_fix(void) {
+    int64_t last_log_ms = -GPS_WAIT_LOG_MS;
+    while (1) {
+        int64_t now = esp_log_timestamp();
+        bool got_any_frame = g_last_gps_rx_local_ms > 0;
+        bool gps_fresh = got_any_frame && ((now - g_last_gps_rx_local_ms) <= GPS_STALE_MS);
+
+        if (gps_fresh && gps_fix_ready()) {
+            ESP_LOGI(TAG, "GPS fix ready: lat=%.6f lon=%.6f sats=%d hdop=%.2f",
+                     g_gps.lat, g_gps.lon, g_gps.sats, g_gps.hdop);
+            return;
+        }
+
+        if ((now - last_log_ms) >= GPS_WAIT_LOG_MS) {
+            if (!got_any_frame) {
+                ESP_LOGW(TAG, "Waiting for GPS data from C6 (no frames yet)");
+            } else if (!gps_fresh) {
+                ESP_LOGW(TAG, "Waiting for fresh GPS data (last frame %lld ms ago)",
+                         (long long)(now - g_last_gps_rx_local_ms));
+            } else {
+                ESP_LOGW(TAG, "Waiting for GPS fix: valid=%d sats=%d lat=%.6f lon=%.6f",
+                         g_gps.valid ? 1 : 0, g_gps.sats, g_gps.lat, g_gps.lon);
+            }
+            last_log_ms = now;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(GPS_WAIT_POLL_MS));
+    }
 }
 
 static void uart_rx_task(void *arg) {
@@ -249,22 +311,16 @@ static void scan_and_log_task(void *arg) {
 
 void app_main(void) {
     init_link_uart();
+    xTaskCreate(uart_rx_task, "uart_rx_task", 4096, NULL, 8, NULL);
 
-    sdmmc_card_t *card = NULL;
-    esp_err_t sd_ret = init_sd_spi(&card);
-    if (sd_ret == ESP_OK) {
-        g_sd_ready = true;
-        sdmmc_card_print_info(stdout, card);
-        ensure_csv_header();
-    } else {
-        g_sd_ready = false;
-        ESP_LOGE(TAG, "SD init failed: %s (0x%x)", esp_err_to_name(sd_ret), (unsigned int)sd_ret);
-        ESP_LOGW(TAG, "Continuing without SD logging. Check wiring/pins/card/pull-ups.");
-    }
+    ESP_LOGI(TAG, "Stage 1/3: waiting for SD card mount");
+    wait_for_sd_ready();
+
+    ESP_LOGI(TAG, "Stage 2/3: waiting for valid GPS fix from C6");
+    wait_for_gps_fix();
 
     ESP_ERROR_CHECK(init_nvs_wifi());
 
-    ESP_LOGI(TAG, "C5 logger started");
-    xTaskCreate(uart_rx_task, "uart_rx_task", 4096, NULL, 8, NULL);
+    ESP_LOGI(TAG, "Stage 3/3: starting Wi-Fi scan + SD logging");
     xTaskCreate(scan_and_log_task, "scan_and_log_task", 8192, NULL, 5, NULL);
 }

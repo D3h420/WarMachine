@@ -47,7 +47,9 @@ Do not connect `5V <-> 5V` if both boards are powered separately via USB.
 
 ### `xiao_c5`
 - receives GPS lines from C6 over UART,
-- scans Wi‑Fi every 5s,
+- waits for SD mount (with retries),
+- waits for valid GPS fix from C6,
+- scans Wi‑Fi every 5s after both conditions are met,
 - appends records to `/sdcard/wardrive.csv`.
 
 ## Requirements
@@ -95,7 +97,11 @@ Expected logs:
    - `idf.py -p /dev/cu.usbmodemYYYY monitor`
 
 Expected logs:
-- `C5 logger started`
+- `Stage 1/3: waiting for SD card mount`
+- `SD ready after ... attempt(s)`
+- `Stage 2/3: waiting for valid GPS fix from C6`
+- `GPS fix ready: ...`
+- `Stage 3/3: starting Wi-Fi scan + SD logging`
 - `Logged N AP entries`
 
 ## Quick End-to-End Test
