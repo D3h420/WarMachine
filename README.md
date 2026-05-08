@@ -41,7 +41,6 @@ Do not connect `5V <-> 5V` if both boards are powered separately via USB.
 ### Hardware Build
 [photo soon]
 
-```
 
 ## Firmware Behavior
 
