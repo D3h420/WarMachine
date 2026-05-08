@@ -1,16 +1,17 @@
 # WarMachine 🚀
 <img width="1983" height="793" alt="WarMachine" src="https://github.com/user-attachments/assets/d3dbda82-bfa6-4225-8157-7a5522b26137" />
 
-Dual-band wardriving setup based on 2x ESP32 - Xiao C5 && C6 + GPS + SD
+Dual-board wardriving setup based on XIAO ESP32-C5 + XIAO ESP32-C6 + GPS + SD.
 
-## Repository Structure
+## Project Layout
+- `xiao_c6/` - firmware for XIAO ESP32-C6 (GPS bridge)
+- `xiao_c5/` - firmware for XIAO ESP32-C5 (Wi-Fi scanner + SD logger, WiGLE CSV)
 
-- `xiao_c6/` -> firmware for XIAO ESP32-C6 (GPS bridge)
-- `xiao_c5/` -> firmware for XIAO ESP32-C5 (Wi‑Fi scanner + SD logger)
+## Hardware
 
-## Wiring (Final)
+### Wiring
 
-### XIAO C6 <-> XIAO C5
+#### XIAO C6 <-> XIAO C5
 | C6 | C5 | Description |
 |---|---|---|
 | `D0 (TX, GPIO0)` | `D1 (RX, GPIO0)` | GPS data from C6 -> C5 |
@@ -19,7 +20,7 @@ Dual-band wardriving setup based on 2x ESP32 - Xiao C5 && C6 + GPS + SD
 
 Do not connect `5V <-> 5V` if both boards are powered separately via USB.
 
-### GPS -> C6
+#### GPS -> C6
 | GPS | C6 |
 |---|---|
 | `TX` | `D7 (RX)` |
@@ -27,7 +28,7 @@ Do not connect `5V <-> 5V` if both boards are powered separately via USB.
 | `GND` | `GND` |
 | `VCC` | `3V3` (if your GPS module supports it) |
 
-### SD -> C5 (SPI)
+#### SD -> C5 (SPI)
 | SD | C5 |
 |---|---|
 | `SCK` | `D8 (GPIO8)` |
@@ -37,91 +38,80 @@ Do not connect `5V <-> 5V` if both boards are powered separately via USB.
 | `GND` | `GND` |
 | `VCC` | `3V3` or according to your SD module specs |
 
-## Software Overview
+### Hardware Build
+Add your build photos here.
+
+Example:
+```md
+![WarMachine build - top](docs/hardware/top.jpg)
+![WarMachine build - wiring closeup](docs/hardware/wiring.jpg)
+```
+
+## Firmware Behavior
 
 ### `xiao_c6`
-- reads NMEA from GPS over UART,
-- parses basic `RMC/GGA` data,
-- sends one line every second to C5:
+- parses GPS NMEA (`RMC/GGA`),
+- sends to C5 once per second:
 `GPS,msgMs,lat,lon,alt,sats,hdop,date,time,valid`
 
 ### `xiao_c5`
-- receives GPS lines from C6 over UART,
 - waits for SD mount (with retries),
 - waits for valid GPS fix from C6,
-- scans Wi‑Fi every 5s after both conditions are met,
-- writes WiGLE-compatible CSV records to `/sdcard/wardrive.csv`.
+- starts Wi-Fi scanning,
+- writes WiGLE-compatible data to `/sdcard/wardrive.csv`.
 
-## Requirements
-
-1. ESP-IDF `v5.x` (recommended)
-2. Python + ESP-IDF tools (`idf.py`)
+## Prerequisites
+1. ESP-IDF `v5.x`
+2. VS Code + Espressif IDF extension (recommended)
 3. Two USB data cables
 
-## ESP-IDF Setup (Short Version)
+## Flashing (VS Code)
 
-1. Install ESP-IDF using the official Espressif guide (installer or manual setup).
-2. Activate the environment:
-   - macOS/Linux: `source ~/esp/esp-idf/export.sh`
-3. Verify:
-   - `idf.py --version`
+Repeat separately for `xiao_c6` and `xiao_c5`.
 
-## Build & Flash: C6
+1. Open the board folder in VS Code (`File -> Open Folder`):
+   - for C6: `xiao_c6`
+   - for C5: `xiao_c5`
+2. In ESP-IDF extension:
+   - `Set Espressif Device Target`
+   - choose `esp32c6` for C6 or `esp32c5` for C5
+3. Run:
+   - `Build`
+   - `Flash`
+   - `Monitor`
 
-1. Go to the project folder:
-   - `cd /Users/dominikhrycaj/Documents/GitHub/WarMachine/xiao_c6`
-2. Set target:
-   - `idf.py set-target esp32c6`
-3. Build:
-   - `idf.py build`
-4. Flash:
-   - `idf.py -p /dev/cu.usbmodemXXXX flash`
-5. Monitor:
-   - `idf.py -p /dev/cu.usbmodemXXXX monitor`
+Expected monitor logs:
+- C6: `C6 GPS bridge started`
+- C5:
+  - `Stage 1/3: waiting for SD card mount`
+  - `Stage 2/3: waiting for valid GPS fix from C6`
+  - `Stage 3/3: starting Wi-Fi scan + SD logging`
 
-Expected logs:
-- `C6 GPS bridge started`
-- `GPS,...` lines
+## Flashing (CLI Alternative)
 
-## Build & Flash: C5
+### C6
+```bash
+cd xiao_c6
+idf.py set-target esp32c6
+idf.py build
+idf.py -p /dev/cu.usbmodemXXXX flash monitor
+```
 
-1. Go to the project folder:
-   - `cd /Users/dominikhrycaj/Documents/GitHub/WarMachine/xiao_c5`
-2. Set target:
-   - `idf.py set-target esp32c5`
-3. Build:
-   - `idf.py build`
-4. Flash:
-   - `idf.py -p /dev/cu.usbmodemYYYY flash`
-5. Monitor:
-   - `idf.py -p /dev/cu.usbmodemYYYY monitor`
+### C5
+```bash
+cd xiao_c5
+idf.py set-target esp32c5
+idf.py build
+idf.py -p /dev/cu.usbmodemYYYY flash monitor
+```
 
-Expected logs:
-- `Stage 1/3: waiting for SD card mount`
-- `SD ready after ... attempt(s)`
-- `Stage 2/3: waiting for valid GPS fix from C6`
-- `GPS fix ready: ...`
-- `Stage 3/3: starting Wi-Fi scan + SD logging`
-- `Logged N AP entries`
-
-## Quick End-to-End Test
-
-1. Power both XIAO boards separately via USB.
-2. Verify `D0/D1 + GND` interconnect between boards.
-3. Place the GPS module outdoors.
-4. Check SD card output:
-   - `/wardrive.csv`
-
-## Clean Build Artifacts
-
-- in `xiao_c6`: `idf.py fullclean`
-- in `xiao_c5`: `idf.py fullclean`
+## Quick Test
+1. Power both boards.
+2. Place GPS outdoors and wait for fix.
+3. Verify `wardrive.csv` appears on SD card and grows over time.
 
 ## Sources
-
 - https://wiki.seeedstudio.com/xiao_esp32c5_getting_started/
 - https://wiki.seeedstudio.com/xiao_esp32c6_getting_started/
 - https://wiki.seeedstudio.com/xiao_esp32c5_pin_multiplexing/
 - https://wiki.seeedstudio.com/xiao_pin_multiplexing_esp32c6/
-
----
