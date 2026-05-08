@@ -1,0 +1,19 @@
+{
+  "idf.currentSetup": "/Users/dominikhrycaj/.espressif/release-v6.0/esp-idf",
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32c6",
+    "OPENOCD_USB_ADAPTER_LOCATION": "2-4"
+  },
+  "clangd.path": "/Users/dominikhrycaj/.espressif/tools/esp-clang/esp-20.1.1_20250829/esp-clang/bin/clangd",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=/Users/dominikhrycaj/Documents/GitHub/WarMachine/xiao_c6/build"
+  ],
+  "idf.flashType": "UART",
+  "idf.port": "/dev/tty.usbmodem2401",
+  "idf.monitorPort": "/dev/tty.usbmodem2401",
+  "idf.openOcdConfigs": [
+    "board/esp32c6-builtin.cfg"
+  ]
+}

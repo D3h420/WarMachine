@@ -12,7 +12,7 @@
 // C6 -> C5: D0 (GPIO0 TX), optional C5 -> C6: D1 (GPIO1 RX)
 
 #define GPS_UART_NUM        UART_NUM_1
-#define LINK_UART_NUM       UART_NUM_2
+#define LINK_UART_NUM       UART_NUM_0
 
 #define GPS_RX_GPIO         17
 #define GPS_TX_GPIO         16

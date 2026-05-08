@@ -14,6 +14,7 @@
 #include "nvs_flash.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
+#include "driver/sdspi_host.h"
 #include "driver/gpio.h"
 
 // C5 wiring:
@@ -35,6 +36,7 @@
 static const char *TAG = "C5_LOGGER";
 static const char *MOUNT_POINT = "/sdcard";
 static const char *CSV_PATH = "/sdcard/wardrive.csv";
+static bool g_sd_ready = false;
 
 typedef struct {
     bool valid;
@@ -69,6 +71,12 @@ static esp_err_t init_nvs_wifi(void) {
 }
 
 static esp_err_t init_sd_spi(sdmmc_card_t **out_card) {
+    // Basic pull-ups help SD cards enter SPI mode reliably on power-up.
+    gpio_set_pull_mode(SD_MOSI_GPIO, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(SD_MISO_GPIO, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(SD_SCK_GPIO, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(SD_CS_GPIO, GPIO_PULLUP_ONLY);
+
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = SD_MOSI_GPIO,
         .miso_io_num = SD_MISO_GPIO,
@@ -77,7 +85,10 @@ static esp_err_t init_sd_spi(sdmmc_card_t **out_card) {
         .quadhd_io_num = -1,
         .max_transfer_sz = 4000
     };
-    ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO));
+    esp_err_t ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        return ret;
+    }
 
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
     slot_config.gpio_cs = SD_CS_GPIO;
@@ -91,9 +102,10 @@ static esp_err_t init_sd_spi(sdmmc_card_t **out_card) {
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = SPI2_HOST;
+    host.max_freq_khz = 4000;
 
     sdmmc_card_t *card = NULL;
-    esp_err_t ret = esp_vfs_fat_sdspi_mount(MOUNT_POINT, &host, &slot_config, &mount_config, &card);
+    ret = esp_vfs_fat_sdspi_mount(MOUNT_POINT, &host, &slot_config, &mount_config, &card);
     if (ret != ESP_OK) return ret;
     *out_card = card;
     return ESP_OK;
@@ -195,6 +207,13 @@ static void scan_and_log_task(void *arg) {
         }
         ESP_ERROR_CHECK(esp_wifi_scan_get_ap_records(&ap_count, recs));
 
+        if (!g_sd_ready) {
+            ESP_LOGW(TAG, "SD not ready, skipping log write");
+            free(recs);
+            vTaskDelay(pdMS_TO_TICKS(SCAN_PERIOD_MS));
+            continue;
+        }
+
         FILE *f = fopen(CSV_PATH, "a");
         if (f) {
             int64_t now = esp_log_timestamp();
@@ -221,13 +240,21 @@ static void scan_and_log_task(void *arg) {
 }
 
 void app_main(void) {
-    ESP_ERROR_CHECK(init_nvs_wifi());
     init_link_uart();
 
     sdmmc_card_t *card = NULL;
-    ESP_ERROR_CHECK(init_sd_spi(&card));
-    sdmmc_card_print_info(stdout, card);
-    ensure_csv_header();
+    esp_err_t sd_ret = init_sd_spi(&card);
+    if (sd_ret == ESP_OK) {
+        g_sd_ready = true;
+        sdmmc_card_print_info(stdout, card);
+        ensure_csv_header();
+    } else {
+        g_sd_ready = false;
+        ESP_LOGE(TAG, "SD init failed: %s (0x%x)", esp_err_to_name(sd_ret), (unsigned int)sd_ret);
+        ESP_LOGW(TAG, "Continuing without SD logging. Check wiring/pins/card/pull-ups.");
+    }
+
+    ESP_ERROR_CHECK(init_nvs_wifi());
 
     ESP_LOGI(TAG, "C5 logger started");
     xTaskCreate(uart_rx_task, "uart_rx_task", 4096, NULL, 8, NULL);
