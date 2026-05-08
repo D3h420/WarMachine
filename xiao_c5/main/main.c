@@ -120,7 +120,10 @@ static void ensure_csv_header(void) {
     f = fopen(CSV_PATH, "w");
     if (!f) return;
     fprintf(f, "device_ms,gps_msg_ms,gps_valid,lat,lon,alt_m,sats,hdop,date_utc,time_utc,ssid,bssid,rssi,channel,authmode\n");
+    fflush(f);
+    fsync(fileno(f));
     fclose(f);
+    ESP_LOGI(TAG, "Created CSV header: %s", CSV_PATH);
 }
 
 static void init_link_uart(void) {
@@ -144,11 +147,11 @@ static void parse_gps_line(const char *line) {
     strncpy(buf, line, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
 
-    char *t[10] = {0};
+    char *t[9] = {0};
     int n = 0;
     char *p = strtok(buf + 4, ",");
-    while (p && n < 10) { t[n++] = p; p = strtok(NULL, ","); }
-    if (n != 10) return;
+    while (p && n < 9) { t[n++] = p; p = strtok(NULL, ","); }
+    if (n != 9) return;
 
     g_gps.msg_ms = atoll(t[0]);
     g_gps.lat = strtof(t[1], NULL);
@@ -157,8 +160,10 @@ static void parse_gps_line(const char *line) {
     g_gps.sats = atoi(t[4]);
     g_gps.hdop = strtof(t[5], NULL);
     strncpy(g_gps.date_utc, t[6], sizeof(g_gps.date_utc) - 1);
+    g_gps.date_utc[sizeof(g_gps.date_utc) - 1] = '\0';
     strncpy(g_gps.time_utc, t[7], sizeof(g_gps.time_utc) - 1);
-    g_gps.valid = atoi(t[9]) == 1;
+    g_gps.time_utc[sizeof(g_gps.time_utc) - 1] = '\0';
+    g_gps.valid = atoi(t[8]) == 1;
 }
 
 static void uart_rx_task(void *arg) {
@@ -196,6 +201,7 @@ static void scan_and_log_task(void *arg) {
         uint16_t ap_count = 0;
         ESP_ERROR_CHECK(esp_wifi_scan_get_ap_num(&ap_count));
         if (ap_count == 0) {
+            ESP_LOGW(TAG, "No APs found in this scan, nothing to log");
             vTaskDelay(pdMS_TO_TICKS(SCAN_PERIOD_MS));
             continue;
         }
@@ -229,6 +235,8 @@ static void scan_and_log_task(void *arg) {
                         g_gps.time_utc[0] ? g_gps.time_utc : "0:0:0",
                         (char *)recs[i].ssid, bssid, recs[i].rssi, recs[i].primary, recs[i].authmode);
             }
+            fflush(f);
+            fsync(fileno(f));
             fclose(f);
             ESP_LOGI(TAG, "Logged %u AP entries", ap_count);
         } else {
