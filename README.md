@@ -13,8 +13,8 @@ Dual-band wardriving setup based on 2x ESP32 - Xiao C5 && C6 + GPS + SD
 ### XIAO C6 <-> XIAO C5
 | C6 | C5 | Description |
 |---|---|---|
-| `D0 (TX)` | `D1 (RX)` | GPS data from C6 -> C5 |
-| `D1 (RX)` | `D0 (TX)` | optional (2-way communication) |
+| `D0 (TX, GPIO0)` | `D1 (RX, GPIO0)` | GPS data from C6 -> C5 |
+| `D1 (RX, GPIO1)` | `D0 (TX, GPIO1)` | optional (2-way communication) |
 | `GND` | `GND` | required |
 
 Do not connect `5V <-> 5V` if both boards are powered separately via USB.
@@ -30,10 +30,10 @@ Do not connect `5V <-> 5V` if both boards are powered separately via USB.
 ### SD -> C5 (SPI)
 | SD | C5 |
 |---|---|
-| `SCK` | `D8` |
-| `MISO` | `D9` |
-| `MOSI` | `D10` |
-| `CS` | `D2` |
+| `SCK` | `D8 (GPIO8)` |
+| `MISO` | `D9 (GPIO9)` |
+| `MOSI` | `D10 (GPIO10)` |
+| `CS` | `D2 (GPIO25)` |
 | `GND` | `GND` |
 | `VCC` | `3V3` or according to your SD module specs |
 
@@ -50,7 +50,7 @@ Do not connect `5V <-> 5V` if both boards are powered separately via USB.
 - waits for SD mount (with retries),
 - waits for valid GPS fix from C6,
 - scans Wi‑Fi every 5s after both conditions are met,
-- appends records to `/sdcard/wardrive.csv`.
+- writes WiGLE-compatible CSV records to `/sdcard/wardrive.csv`.
 
 ## Requirements
 

@@ -19,18 +19,18 @@
 #include "driver/gpio.h"
 
 // C5 wiring:
-// SD: SCK D8(GPIO19), MISO D9(GPIO20), MOSI D10(GPIO18), CS D2(GPIO2)
-// C5 <- C6: D1(GPIO1 RX), optional C5 -> C6: D0(GPIO0 TX)
+// SD: SCK D8(GPIO8), MISO D9(GPIO9), MOSI D10(GPIO10), CS D2(GPIO25)
+// C5 <- C6: D1(GPIO0 RX), optional C5 -> C6: D0(GPIO1 TX)
 
 #define LINK_UART_NUM    UART_NUM_1
-#define LINK_RX_GPIO     1
-#define LINK_TX_GPIO     0
+#define LINK_RX_GPIO     0
+#define LINK_TX_GPIO     1
 #define LINK_BAUD        115200
 
-#define SD_MOSI_GPIO     18
-#define SD_MISO_GPIO     20
-#define SD_SCK_GPIO      19
-#define SD_CS_GPIO       2
+#define SD_MOSI_GPIO     10
+#define SD_MISO_GPIO     9
+#define SD_SCK_GPIO      8
+#define SD_CS_GPIO       25
 
 #define SCAN_PERIOD_MS   5000
 #define SD_RETRY_MS      2000
@@ -41,8 +41,13 @@
 static const char *TAG = "C5_LOGGER";
 static const char *MOUNT_POINT = "/sdcard";
 static const char *CSV_PATH = "/sdcard/wardrive.csv";
+static const char *WIGLE_HEADER_1 =
+    "WigleWifi-1.4,appRelease=v1.1,model=WarMachine,release=v1.0,device=WarMachine,display=SPI TFT,board=ESP32C5,brand=Laboratorium";
+static const char *WIGLE_HEADER_2 =
+    "MAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type";
 static bool g_sd_ready = false;
 static int64_t g_last_gps_rx_local_ms = 0;
+static bool g_sd_spi_bus_inited = false;
 
 typedef struct {
     bool valid;
@@ -91,9 +96,12 @@ static esp_err_t init_sd_spi(sdmmc_card_t **out_card) {
         .quadhd_io_num = -1,
         .max_transfer_sz = 4000
     };
-    esp_err_t ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
-    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-        return ret;
+    if (!g_sd_spi_bus_inited) {
+        esp_err_t ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
+        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+            return ret;
+        }
+        g_sd_spi_bus_inited = true;
     }
 
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
@@ -111,25 +119,94 @@ static esp_err_t init_sd_spi(sdmmc_card_t **out_card) {
     host.max_freq_khz = 4000;
 
     sdmmc_card_t *card = NULL;
-    ret = esp_vfs_fat_sdspi_mount(MOUNT_POINT, &host, &slot_config, &mount_config, &card);
+    esp_err_t ret = esp_vfs_fat_sdspi_mount(MOUNT_POINT, &host, &slot_config, &mount_config, &card);
     if (ret != ESP_OK) return ret;
     *out_card = card;
     return ESP_OK;
 }
 
+static const char *authmode_to_wigle(int authmode) {
+    switch (authmode) {
+        case WIFI_AUTH_OPEN:
+            return "[OPEN]";
+        case WIFI_AUTH_WEP:
+            return "[WEP]";
+        case WIFI_AUTH_WPA_PSK:
+            return "[WPA_PSK]";
+        case WIFI_AUTH_WPA2_PSK:
+            return "[WPA2_PSK]";
+        case WIFI_AUTH_WPA_WPA2_PSK:
+            return "[WPA_WPA2_PSK]";
+        case WIFI_AUTH_WPA2_ENTERPRISE:
+            return "[WPA2_ENT]";
+#ifdef WIFI_AUTH_WPA3_PSK
+        case WIFI_AUTH_WPA3_PSK:
+            return "[WPA3_PSK]";
+#endif
+#ifdef WIFI_AUTH_WPA2_WPA3_PSK
+        case WIFI_AUTH_WPA2_WPA3_PSK:
+            return "[WPA2_WPA3_PSK]";
+#endif
+#ifdef WIFI_AUTH_WAPI_PSK
+        case WIFI_AUTH_WAPI_PSK:
+            return "[WAPI_PSK]";
+#endif
+#ifdef WIFI_AUTH_OWE
+        case WIFI_AUTH_OWE:
+            return "[OWE]";
+#endif
+#ifdef WIFI_AUTH_WPA3_ENT_192
+        case WIFI_AUTH_WPA3_ENT_192:
+            return "[WPA3_ENT_192]";
+#endif
+        default:
+            return "[UNKNOWN]";
+    }
+}
+
+static void csv_escape_ssid(const uint8_t *raw_ssid, size_t raw_len, char *out, size_t out_sz) {
+    if (!out || out_sz == 0) return;
+    size_t j = 0;
+    out[j++] = '"';
+    for (size_t i = 0; i < raw_len && j + 2 < out_sz; i++) {
+        char c = (char)raw_ssid[i];
+        if (c == '\0') break;
+        if (c == '"') {
+            if (j + 2 >= out_sz) break;
+            out[j++] = '"';
+            out[j++] = '"';
+        } else if ((unsigned char)c >= 32) {
+            out[j++] = c;
+        }
+    }
+    if (j < out_sz - 1) out[j++] = '"';
+    out[j] = '\0';
+}
+
 static void ensure_csv_header(void) {
     FILE *f = fopen(CSV_PATH, "r");
     if (f) {
+        char line1[256] = {0};
+        char line2[256] = {0};
+        char *r1 = fgets(line1, sizeof(line1), f);
+        char *r2 = fgets(line2, sizeof(line2), f);
         fclose(f);
-        return;
+        if (r1 && r2 &&
+            strncmp(line1, "WigleWifi-1.4,", strlen("WigleWifi-1.4,")) == 0 &&
+            strncmp(line2, "MAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type",
+                    strlen("MAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type")) == 0) {
+            return;
+        }
+        ESP_LOGW(TAG, "Existing CSV is not WiGLE format, recreating %s", CSV_PATH);
     }
     f = fopen(CSV_PATH, "w");
     if (!f) return;
-    fprintf(f, "device_ms,gps_msg_ms,gps_valid,lat,lon,alt_m,sats,hdop,date_utc,time_utc,ssid,bssid,rssi,channel,authmode\n");
+    fprintf(f, "%s\n", WIGLE_HEADER_1);
+    fprintf(f, "%s\n", WIGLE_HEADER_2);
     fflush(f);
     fsync(fileno(f));
     fclose(f);
-    ESP_LOGI(TAG, "Created CSV header: %s", CSV_PATH);
+    ESP_LOGI(TAG, "Created WiGLE CSV header: %s", CSV_PATH);
 }
 
 static void init_link_uart(void) {
@@ -284,18 +361,29 @@ static void scan_and_log_task(void *arg) {
 
         FILE *f = fopen(CSV_PATH, "a");
         if (f) {
-            int64_t now = esp_log_timestamp();
+            const char *date = g_gps.date_utc[0] ? g_gps.date_utc : "1970-01-01";
+            const char *time = g_gps.time_utc[0] ? g_gps.time_utc : "00:00:00";
+            char first_seen[32];
+            snprintf(first_seen, sizeof(first_seen), "%s %s", date, time);
+
             for (int i = 0; i < ap_count; i++) {
                 char bssid[18];
+                char ssid_esc[80];
                 snprintf(bssid, sizeof(bssid), "%02X:%02X:%02X:%02X:%02X:%02X",
                          recs[i].bssid[0], recs[i].bssid[1], recs[i].bssid[2],
                          recs[i].bssid[3], recs[i].bssid[4], recs[i].bssid[5]);
-                fprintf(f, "%lld,%lld,%d,%.6f,%.6f,%.2f,%d,%.2f,%s,%s,\"%s\",%s,%d,%d,%d\n",
-                        (long long)now, (long long)g_gps.msg_ms, g_gps.valid ? 1 : 0,
-                        g_gps.lat, g_gps.lon, g_gps.alt_m, g_gps.sats, g_gps.hdop,
-                        g_gps.date_utc[0] ? g_gps.date_utc : "0-0-0",
-                        g_gps.time_utc[0] ? g_gps.time_utc : "0:0:0",
-                        (char *)recs[i].ssid, bssid, recs[i].rssi, recs[i].primary, recs[i].authmode);
+                csv_escape_ssid(recs[i].ssid, recs[i].ssid_len, ssid_esc, sizeof(ssid_esc));
+                fprintf(f, "%s,%s,%s,%s,%d,%d,%.7f,%.7f,%.2f,%.2f,WIFI\n",
+                        bssid,
+                        ssid_esc,
+                        authmode_to_wigle(recs[i].authmode),
+                        first_seen,
+                        recs[i].primary,
+                        recs[i].rssi,
+                        g_gps.lat,
+                        g_gps.lon,
+                        g_gps.alt_m,
+                        g_gps.hdop);
             }
             fflush(f);
             fsync(fileno(f));
