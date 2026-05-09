@@ -47,6 +47,12 @@ Example:
 ![WarMachine build - wiring closeup](docs/hardware/wiring.jpg)
 ```
 
+### Enclosure (MakerWorld)
+A dedicated WarMachine enclosure project is in progress and will be published on MakerWorld soon.  
+It is designed to keep the XIAO C5/C6 stack, GPS module, and wiring compact, protected, and easy to carry in the field.
+
+MakerWorld link: `TODO`
+
 ## Firmware Behavior
 
 ### `xiao_c6`
