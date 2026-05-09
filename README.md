@@ -39,13 +39,8 @@ Do not connect `5V <-> 5V` if both boards are powered separately via USB.
 | `VCC` | `3V3` or according to your SD module specs |
 
 ### Hardware Build
-Add your build photos here.
+[photo soon]
 
-Example:
-```md
-![WarMachine build - top](docs/hardware/top.jpg)
-![WarMachine build - wiring closeup](docs/hardware/wiring.jpg)
-```
 
 ### Enclosure (MakerWorld)
 A dedicated WarMachine enclosure project is in progress and will be published on MakerWorld soon.  
