@@ -40,6 +40,7 @@ Do not connect `5V <-> 5V` if both boards are powered separately via USB.
 
 ### Hardware Build
 40x60 proto pcb
+
 <img width="760" alt="Zrzut ekranu 2026-05-11 o 09 36 58" src="https://github.com/user-attachments/assets/aa39db76-0496-4d51-99df-27f507c1c020" />
 
 ### Enclosure (MakerWorld)
