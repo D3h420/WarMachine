@@ -43,10 +43,8 @@ Do not connect `5V <-> 5V` if both boards are powered separately via USB.
 
 
 ### Enclosure (MakerWorld)
-A dedicated WarMachine enclosure project is in progress and will be published on MakerWorld soon.  
-It is designed to keep the XIAO C5/C6 stack, GPS module, and wiring compact, protected, and easy to carry in the field.
+[MakerWorld enclosure - dedicated WarMachine enclosure](https://makerworld.com/pl/models/2781343-warmachine-xiao-c5-c6-wardriving-setup#profileId-3091165)
 
-MakerWorld link: `TODO`
 
 ## Firmware Behavior
 
