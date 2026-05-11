@@ -39,12 +39,13 @@ Do not connect `5V <-> 5V` if both boards are powered separately via USB.
 | `VCC` | `3V3` or according to your SD module specs |
 
 ### Hardware Build
-[photo soon]
-
+40x60 proto pcb
+<img width="907" height="874" alt="Zrzut ekranu 2026-05-11 o 09 36 58" src="https://github.com/user-attachments/assets/aa39db76-0496-4d51-99df-27f507c1c020" />
+<img width="589" height="397" alt="Zrzut ekranu 2026-05-11 o 09 37 13" src="https://github.com/user-attachments/assets/89df85c0-cabb-4f80-8acc-e11f18b6d489" />
 
 ### Enclosure (MakerWorld)
-[MakerWorld enclosure - dedicated WarMachine enclosure](https://makerworld.com/pl/models/2781343-warmachine-xiao-c5-c6-wardriving-setup#profileId-3091165)
-
+[MakerWorld project - dedicated WarMachine enclosure](https://makerworld.com/pl/models/2781343-warmachine-xiao-c5-c6-wardriving-setup#profileId-3091165)
+<img width="1086" height="1448" alt="112D61E7-9829-4983-B497-CDD69BAEB915" src="https://github.com/user-attachments/assets/20194e14-bea8-4370-ba52-26269c2abd15" />
 
 ## Firmware Behavior
 
