@@ -1,20 +1,32 @@
+<div align="center">
+
 # WarMachine 🚀
+
+**Dual-board ESP32-C5/C6 wardriving platform for parallel 2.4 GHz + 5 GHz collection.**
+
+![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v5.x-E7352C?style=for-the-badge&logo=espressif)
+![Target C5](https://img.shields.io/badge/XIAO-ESP32--C5-111827?style=for-the-badge)
+![Target C6](https://img.shields.io/badge/XIAO-ESP32--C6-111827?style=for-the-badge)
+![WiGLE CSV](https://img.shields.io/badge/Output-WiGLE%20CSV-2563EB?style=for-the-badge)
 
 <img width="1983" height="793" alt="WarMachine" src="https://github.com/user-attachments/assets/d3dbda82-bfa6-4225-8157-7a5522b26137" />
 
-Dual-board wardriving rig built around **XIAO ESP32-C6 + XIAO ESP32-C5 + GPS + SD**.
-C6 owns **2.4 GHz + GPS**, C5 owns **5 GHz + logging**, and both streams land in one WiGLE-compatible CSV.
+</div>
 
-## ✨ Highlights
+WarMachine splits wardriving work across two XIAO boards: **C6 handles GPS + 2.4 GHz discovery**, while **C5 handles 5 GHz scanning + SD logging**. The result is a compact rig that collects both bands in parallel and writes a single WiGLE-compatible dataset.
 
-- 🛰️ GPS bridge with fresh-fix gating
-- 📡 Parallel 2.4 GHz and 5 GHz scanning
-- 🧠 Adaptive channel hopping with discounted UCB
-- 💾 WiGLE CSV logging to SD card
-- 🔁 AP dedupe with RSSI/location-based re-log
-- 🧰 Runtime serial commands for status and scan tuning
+## Overview
 
-## 🧭 Architecture
+| Capability | Implementation |
+|---|---|
+| 🛰️ Positioning | C6 parses GPS NMEA and streams fresh fixes to C5 |
+| 📡 Dual-band capture | C6 scans 2.4 GHz while C5 scans 5 GHz |
+| 🧠 Channel strategy | discounted UCB prioritizes productive channels |
+| 💾 Logging | C5 writes WiGLE CSV batches to SD |
+| 🔁 Re-log control | APs are re-logged by RSSI delta, movement, or metadata change |
+| 🧰 Field control | serial commands expose status, mode, and scan timing |
+
+## Architecture
 
 | Board | Role | Output |
 |---|---|---|
@@ -26,7 +38,7 @@ GPS ──UART──> XIAO C6 ──GPS/AP24 UART──> XIAO C5 ──SPI──
                          2.4 GHz scan       5 GHz scan
 ```
 
-## 🔌 Hardware
+## Hardware
 
 ### XIAO C6 ↔ XIAO C5
 
@@ -70,9 +82,9 @@ Dedicated enclosure:
 
 <img width="326" alt="WarMachine enclosure" src="https://github.com/user-attachments/assets/20194e14-bea8-4370-ba52-26269c2abd15" />
 
-## 🧠 Firmware
+## Firmware
 
-### C6: GPS + 2.4 GHz Scout
+### `xiao_c6`: GPS + 2.4 GHz Scout
 
 - Parses GPS NMEA sentences: `RMC` and `GGA`
 - Publishes GPS once per second:
@@ -88,7 +100,7 @@ GPS,msgMs,lat,lon,alt,sats,hdop,date,time,valid
 AP24,msgMs,bssid,channel,rssi,authmode,ssidHex
 ```
 
-### C5: 5 GHz Logger
+### `xiao_c5`: 5 GHz Logger
 
 - Waits for SD card mount
 - Waits for valid, fresh GPS from C6
@@ -128,7 +140,7 @@ Known APs are re-logged only when the new sample is useful:
 
 This keeps WiGLE trilateration useful without flooding the CSV.
 
-## 🕹️ Runtime Commands
+## Runtime Commands
 
 Use these in the C5 ESP-IDF monitor:
 
@@ -142,35 +154,33 @@ Use these in the C5 ESP-IDF monitor:
 | `channel_time read min|max` | read active-scan timing |
 | `channel_time set min|max <ms>` | persist active-scan timing in NVS |
 
-## ⚡ Flashing
+## Flashing
 
 ### Requirements
 
 - ESP-IDF `v5.x`
-- VS Code + Espressif IDF extension, or `idf.py`
+- VS Code + Espressif IDF extension or `idf.py`
 - Two USB data cables
 
 ### VS Code
 
-Open each firmware folder separately and flash it with the matching target:
+Open and flash each firmware folder separately:
 
 | Folder | Target | Expected Boot Log |
 |---|---|---|
 | `xiao_c6` | `esp32c6` | `C6 GPS bridge started` |
 | `xiao_c5` | `esp32c5` | `Stage 4/4: starting wardrive engine ...` |
 
-Flow:
+Recommended flow:
 
-1. `File → Open Folder`
-2. Select `xiao_c6` or `xiao_c5`
-3. `Set Espressif Device Target`
-4. `Build`
-5. `Flash`
-6. `Monitor`
+1. Open `xiao_c6` or `xiao_c5` with `File → Open Folder`.
+2. Run `Set Espressif Device Target`.
+3. Select the matching target from the table above.
+4. Run `Build`, then `Flash`, then `Monitor`.
 
 ### CLI
 
-Flash C6:
+Build and flash C6:
 
 ```bash
 cd xiao_c6
@@ -179,7 +189,7 @@ idf.py build
 idf.py -p /dev/cu.usbmodemXXXX flash monitor
 ```
 
-Flash C5:
+Build and flash C5:
 
 ```bash
 cd xiao_c5
@@ -188,7 +198,7 @@ idf.py build
 idf.py -p /dev/cu.usbmodemYYYY flash monitor
 ```
 
-## ✅ Quick Test
+## Quick Test
 
 1. Insert SD card into C5.
 2. Power both boards.
@@ -197,7 +207,16 @@ idf.py -p /dev/cu.usbmodemYYYY flash monitor
 5. Confirm `/sdcard/wardrive.csv` appears and grows.
 6. Run `status` to verify `remote24`, `seen`, `dirty`, and GPS state.
 
-## 📚 Sources
+Expected C5 startup sequence:
+
+```text
+Stage 1/4: waiting for SD card mount
+Stage 2/4: waiting for valid GPS fix from C6
+Stage 3/4: init NVS + Wi-Fi
+Stage 4/4: starting wardrive engine (C5=5GHz promisc, C6=2.4GHz AP24 ingest)
+```
+
+## References
 
 - [XIAO ESP32-C5 Getting Started](https://wiki.seeedstudio.com/xiao_esp32c5_getting_started/)
 - [XIAO ESP32-C6 Getting Started](https://wiki.seeedstudio.com/xiao_esp32c6_getting_started/)
