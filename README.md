@@ -142,7 +142,7 @@ Stage 4/4: starting wardrive engine (C5=5GHz promisc, C6=2.4GHz AP24 ingest)
 
 ## Build
 
-40×60 proto PCB:
+40×60mm proto PCB:
 
 <img width="760" alt="WarMachine proto PCB" src="https://github.com/user-attachments/assets/aa39db76-0496-4d51-99df-27f507c1c020" />
 
