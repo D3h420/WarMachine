@@ -7,13 +7,13 @@
 ![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v5.x-E7352C?style=for-the-badge&logo=espressif)
 ![Target C5](https://img.shields.io/badge/XIAO-ESP32--C5-111827?style=for-the-badge)
 ![Target C6](https://img.shields.io/badge/XIAO-ESP32--C6-111827?style=for-the-badge)
-![WiGLE CSV](https://img.shields.io/badge/Output-WiGLE%20CSV-2563EB?style=for-the-badge)
+![WiGLE Log](https://img.shields.io/badge/Output-WiGLE%20.log-2563EB?style=for-the-badge)
 
 <img width="1983" height="793" alt="WarMachine" src="https://github.com/user-attachments/assets/d3dbda82-bfa6-4225-8157-7a5522b26137" />
 
 </div>
 
-WarMachine splits wardriving work across two XIAO boards: **C6 handles GPS + 2.4 GHz discovery**, while **C5 handles 5 GHz scanning + SD logging**. The result is a compact rig that collects both bands in parallel and writes a single WiGLE-compatible dataset.
+WarMachine splits wardriving work across two XIAO boards: **C6 handles GPS + 2.4 GHz discovery**, while **C5 handles 5 GHz scanning + SD logging**. The result is a compact rig that collects both bands in parallel and writes a single WiGLE-compatible `.log` dataset.
 
 ## Overview
 
@@ -22,7 +22,7 @@ WarMachine splits wardriving work across two XIAO boards: **C6 handles GPS + 2.4
 | 🛰️ Positioning | C6 parses GPS NMEA and streams fresh fixes to C5 |
 | 📡 Dual-band capture | C6 scans 2.4 GHz while C5 scans 5 GHz |
 | 🧠 Channel strategy | discounted UCB prioritizes productive channels |
-| 💾 Logging | C5 writes WiGLE CSV batches to SD |
+| 💾 Logging | C5 writes WiGLE-compatible `.log` batches to SD |
 | 🔁 Re-log control | APs are re-logged by RSSI delta, movement, or metadata change |
 | 🧰 Field control | serial commands expose status, mode, and scan timing |
 
@@ -31,7 +31,7 @@ WarMachine splits wardriving work across two XIAO boards: **C6 handles GPS + 2.4
 | Board | Role | Output |
 |---|---|---|
 | `xiao_c6` | GPS parser + 2.4 GHz scanner | `GPS,...` and `AP24,...` over UART |
-| `xiao_c5` | 5 GHz scanner + SD logger | `/sdcard/wardrive.csv` |
+| `xiao_c5` | 5 GHz scanner + SD logger | `/sdcard/wardrive.log` |
 
 ```text
 GPS ──UART──> XIAO C6 ──GPS/AP24 UART──> XIAO C5 ──SPI──> SD
@@ -108,10 +108,17 @@ AP24,msgMs,bssid,channel,rssi,authmode,ssidHex
 - Runs 5 GHz wardrive engine
 - Merges local 5 GHz APs with remote C6 2.4 GHz APs
 - Deduplicates by BSSID in RAM
-- Writes WiGLE CSV batches to:
+- Writes WiGLE-compatible log batches to:
 
 ```text
-/sdcard/wardrive.csv
+/sdcard/wardrive.log
+```
+
+Log header:
+
+```text
+WigleWifi-1.6,appRelease=v1.2,model=WarMachine,release=v1.1,device=WarMachine,display=SPI TFT,board=ESP32C5,brand=LAB5
+MAC,SSID,AuthMode,FirstSeen,Channel,Frequency,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,RCOIs,MfgrId,Type
 ```
 
 ### Scan Timing
@@ -138,7 +145,7 @@ Known APs are re-logged only when the new sample is useful:
 - or position changes by about `25 m`
 - or channel/security/SSID changes
 
-This keeps WiGLE trilateration useful without flooding the CSV.
+This keeps WiGLE trilateration useful without flooding the log.
 
 ## Runtime Commands
 
@@ -204,7 +211,7 @@ idf.py -p /dev/cu.usbmodemYYYY flash monitor
 2. Power both boards.
 3. Place GPS outdoors and wait for fix.
 4. Watch C5 monitor for `GPS fix ready`.
-5. Confirm `/sdcard/wardrive.csv` appears and grows.
+5. Confirm `/sdcard/wardrive.log` appears and grows.
 6. Run `status` to verify `remote24`, `seen`, `dirty`, and GPS state.
 
 Expected C5 startup sequence:
