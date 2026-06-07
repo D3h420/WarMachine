@@ -31,7 +31,7 @@ WarMachine splits wardriving work across two XIAO boards: **C6 handles GPS + 2.4
 | Board | Role | Output |
 |---|---|---|
 | `xiao_c6` | GPS parser + 2.4 GHz scanner | `GPS,...` and `AP24,...` over UART |
-| `xiao_c5` | 5 GHz scanner + SD logger | `/sdcard/wardrive.log` |
+| `xiao_c5` | 5 GHz scanner + SD logger | `/sdcard/wardrive_<n>.log` |
 
 ```text
 GPS ──UART──> XIAO C6 ──GPS/AP24 UART──> XIAO C5 ──SPI──> SD
@@ -111,13 +111,21 @@ AP24,msgMs,bssid,channel,rssi,authmode,ssidHex
 - Writes WiGLE-compatible log batches to:
 
 ```text
-/sdcard/wardrive.log
+/sdcard/wardrive_<n>.log
+```
+
+Each boot creates a new session file by picking the first free number:
+
+```text
+wardrive_1.log
+wardrive_2.log
+wardrive_3.log
 ```
 
 Log header:
 
 ```text
-WigleWifi-1.6,appRelease=v1.2,model=WarMachine,release=v1.1,device=WarMachine,display=SPI TFT,board=ESP32C5,brand=LAB5
+WigleWifi-1.6,appRelease=v1.2,model=WarMachine,release=v1.1,device=C5&&C6,display=none,board=ESP32C5+ESP32C6,brand=D3h420
 MAC,SSID,AuthMode,FirstSeen,Channel,Frequency,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,RCOIs,MfgrId,Type
 ```
 
@@ -154,7 +162,7 @@ Use these in the C5 ESP-IDF monitor:
 | Command | Description |
 |---|---|
 | `help` | show commands |
-| `status` | print GPS, mode, counters, dirty rows |
+| `status` | print GPS, active log, mode, counters, dirty rows |
 | `mode read` | show current scan mode |
 | `mode set promisc` | fast passive 5 GHz hopping |
 | `mode set scan` | active 5 GHz scan mode |
@@ -211,7 +219,7 @@ idf.py -p /dev/cu.usbmodemYYYY flash monitor
 2. Power both boards.
 3. Place GPS outdoors and wait for fix.
 4. Watch C5 monitor for `GPS fix ready`.
-5. Confirm `/sdcard/wardrive.log` appears and grows.
+5. Confirm `/sdcard/wardrive_1.log` appears and grows.
 6. Run `status` to verify `remote24`, `seen`, `dirty`, and GPS state.
 
 Expected C5 startup sequence:

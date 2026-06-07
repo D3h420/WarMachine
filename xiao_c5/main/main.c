@@ -66,9 +66,9 @@
 
 static const char *TAG = "C5_LOGGER";
 static const char *MOUNT_POINT = "/sdcard";
-static const char *LOG_PATH = "/sdcard/wardrive.log";
+static char g_log_path[64] = "/sdcard/wardrive_1.log";
 static const char *WIGLE_HEADER_1 =
-    "WigleWifi-1.6,appRelease=v1.2,model=WarMachine,release=v1.1,device=WarMachine,display=SPI TFT,board=ESP32C5,brand=LAB5";
+    "WigleWifi-1.6,appRelease=v1.2,model=WarMachine,release=v1.1,device=C5&&C6,display=none,board=ESP32C5+ESP32C6,brand=D3h420";
 static const char *WIGLE_HEADER_2 =
     "MAC,SSID,AuthMode,FirstSeen,Channel,Frequency,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,RCOIs,MfgrId,Type";
 
@@ -299,6 +299,20 @@ static int channel_to_frequency_mhz(uint8_t channel)
     return 0;
 }
 
+static void select_next_log_path(void)
+{
+    for (int index = 1; index < 10000; index++) {
+        snprintf(g_log_path, sizeof(g_log_path), "%s/wardrive_%d.log", MOUNT_POINT, index);
+        if (access(g_log_path, F_OK) != 0) {
+            ESP_LOGI(TAG, "Selected new wardrive session log: %s", g_log_path);
+            return;
+        }
+    }
+
+    snprintf(g_log_path, sizeof(g_log_path), "%s/wardrive_overflow.log", MOUNT_POINT);
+    ESP_LOGW(TAG, "Log index limit reached, using fallback log: %s", g_log_path);
+}
+
 static float gps_distance_m(float lat_a, float lon_a, float lat_b, float lon_b)
 {
     const float deg_to_rad = 0.01745329251994329577f;
@@ -472,7 +486,7 @@ static esp_err_t init_sd_spi(sdmmc_card_t **out_card)
 
 static void ensure_log_header(void)
 {
-    FILE *f = fopen(LOG_PATH, "r");
+    FILE *f = fopen(g_log_path, "r");
     if (f) {
         char line1[256] = {0};
         char line2[256] = {0};
@@ -484,10 +498,10 @@ static void ensure_log_header(void)
             strncmp(line2, WIGLE_HEADER_2, strlen(WIGLE_HEADER_2)) == 0) {
             return;
         }
-        ESP_LOGW(TAG, "Existing log is not WiGLE format, recreating %s", LOG_PATH);
+        ESP_LOGW(TAG, "Existing log is not WiGLE format, recreating %s", g_log_path);
     }
 
-    f = fopen(LOG_PATH, "w");
+    f = fopen(g_log_path, "w");
     if (!f) {
         return;
     }
@@ -496,7 +510,7 @@ static void ensure_log_header(void)
     fflush(f);
     fsync(fileno(f));
     fclose(f);
-    ESP_LOGI(TAG, "Created WiGLE log header: %s", LOG_PATH);
+    ESP_LOGI(TAG, "Created WiGLE log header: %s", g_log_path);
 }
 
 static void init_link_uart(void)
@@ -678,6 +692,7 @@ static void wait_for_sd_ready(void)
         if (sd_ret == ESP_OK) {
             g_sd_ready = true;
             sdmmc_card_print_info(stdout, card);
+            select_next_log_path();
             ensure_log_header();
             ESP_LOGI(TAG, "SD ready after %d attempt(s)", attempt);
             return;
@@ -1052,9 +1067,9 @@ static void write_entries_to_log(const seen_ap_t *entries, int count)
         return;
     }
 
-    FILE *f = fopen(LOG_PATH, "a");
+    FILE *f = fopen(g_log_path, "a");
     if (!f) {
-        ESP_LOGE(TAG, "Cannot open %s", LOG_PATH);
+        ESP_LOGE(TAG, "Cannot open %s", g_log_path);
         return;
     }
 
@@ -1301,12 +1316,13 @@ static void print_status(void)
     portEXIT_CRITICAL(&g_seen_lock);
 
     ESP_LOGI(TAG,
-             "status: mode=%s gps=%s lat=%.6f lon=%.6f sats=%d channel_time[min=%u,max=%u] seen=%" PRIu32 " dirty=%" PRIu32 " new=%" PRIu32 " remote24=%" PRIu32 " dedup=%" PRIu32 " dropped=%" PRIu32,
+             "status: mode=%s gps=%s lat=%.6f lon=%.6f sats=%d log=%s channel_time[min=%u,max=%u] seen=%" PRIu32 " dirty=%" PRIu32 " new=%" PRIu32 " remote24=%" PRIu32 " dedup=%" PRIu32 " dropped=%" PRIu32,
              mode,
              gps_ok ? "ok" : "lost",
              gps.lat,
              gps.lon,
              gps.sats,
+             g_log_path,
              (unsigned)min_ms,
              (unsigned)max_ms,
              seen,
