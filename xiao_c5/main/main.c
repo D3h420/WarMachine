@@ -43,8 +43,6 @@
 
 #define SCAN_PAUSE_MS             500
 #define SD_RETRY_MS               2000
-#define GPS_WAIT_POLL_MS          250
-#define GPS_WAIT_LOG_MS           3000
 #define GPS_STALE_MS              5000
 #define PROMISC_FLUSH_INTERVAL_MS 30000
 #define PROMISC_FLUSH_INTERVAL_AP 40
@@ -354,66 +352,6 @@ static bool gps_is_fresh_and_valid(gps_state_t *snapshot)
     return gps_fresh && local.valid && (local.sats > 0) && coords_present;
 }
 
-static void wait_for_gps_fix_startup(void)
-{
-    int64_t last_log_ms = -GPS_WAIT_LOG_MS;
-    while (1) {
-        gps_state_t gps = {0};
-        int64_t last_rx = 0;
-        gps_snapshot(&gps, &last_rx);
-
-        int64_t now = esp_log_timestamp();
-        bool got_any_frame = last_rx > 0;
-        bool gps_fresh = got_any_frame && ((now - last_rx) <= GPS_STALE_MS);
-        bool coords_present = (fabsf(gps.lat) > 0.000001f) || (fabsf(gps.lon) > 0.000001f);
-        bool ready = gps_fresh && gps.valid && (gps.sats > 0) && coords_present;
-
-        if (ready) {
-            ESP_LOGI(TAG, "GPS fix ready: lat=%.6f lon=%.6f sats=%d hdop=%.2f",
-                     gps.lat, gps.lon, gps.sats, gps.hdop);
-            return;
-        }
-
-        if ((now - last_log_ms) >= GPS_WAIT_LOG_MS) {
-            if (!got_any_frame) {
-                ESP_LOGW(TAG, "Waiting for GPS data from C6 (no frames yet)");
-            } else if (!gps_fresh) {
-                ESP_LOGW(TAG, "Waiting for fresh GPS data (last frame %lld ms ago)",
-                         (long long)(now - last_rx));
-            } else {
-                ESP_LOGW(TAG, "Waiting for GPS fix: valid=%d sats=%d lat=%.6f lon=%.6f",
-                         gps.valid ? 1 : 0, gps.sats, gps.lat, gps.lon);
-            }
-            last_log_ms = now;
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(GPS_WAIT_POLL_MS));
-    }
-}
-
-static void wait_for_gps_recovery(void)
-{
-    ESP_LOGW(TAG, "GPS fix lost - pausing wardrive until fix recovers...");
-    int64_t last_log_ms = 0;
-
-    while (1) {
-        gps_state_t gps = {0};
-        if (gps_is_fresh_and_valid(&gps)) {
-            ESP_LOGI(TAG, "GPS fix recovered: lat=%.6f lon=%.6f sats=%d hdop=%.2f",
-                     gps.lat, gps.lon, gps.sats, gps.hdop);
-            return;
-        }
-
-        int64_t now = esp_log_timestamp();
-        if ((now - last_log_ms) >= GPS_WAIT_LOG_MS) {
-            ESP_LOGW(TAG, "Still waiting for GPS recovery...");
-            last_log_ms = now;
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(GPS_WAIT_POLL_MS));
-    }
-}
-
 static esp_err_t init_nvs_wifi(void)
 {
     esp_err_t ret = nvs_flash_init();
@@ -633,9 +571,6 @@ static void parse_remote_ap24_line(const char *line)
 
     gps_state_t gps = {0};
     bool gps_ok = gps_is_fresh_and_valid(&gps);
-    if (!gps_ok) {
-        return;
-    }
 
     char buf[180];
     strncpy(buf, line, sizeof(buf) - 1);
@@ -805,6 +740,7 @@ static bool seen_upsert_unsafe(const uint8_t bssid[6],
         }
         if (gps_valid && gps) {
             if (!entry->gps_valid) {
+                format_first_seen(gps, entry->first_seen);
                 should_relog = true;
             } else {
                 float moved_m = gps_distance_m(entry->lat, entry->lon, gps->lat, gps->lon);
@@ -943,9 +879,6 @@ static void promisc_rx_callback(void *buf, wifi_promiscuous_pkt_type_t type)
 
     gps_state_t gps = {0};
     bool gps_valid = gps_is_fresh_and_valid(&gps);
-    if (!gps_valid) {
-        return;
-    }
 
     portENTER_CRITICAL(&g_seen_lock);
     bool is_new = seen_upsert_unsafe(
@@ -1245,10 +1178,6 @@ static void run_scan_cycle(void)
 {
     gps_state_t gps = {0};
     bool gps_ok = gps_is_fresh_and_valid(&gps);
-    if (!gps_ok) {
-        wait_for_gps_recovery();
-        gps_ok = gps_is_fresh_and_valid(&gps);
-    }
 
     uint32_t min_ms = 0;
     uint32_t max_ms = 0;
@@ -1268,11 +1197,6 @@ static void run_scan_cycle(void)
 
 static void run_promisc_cycle(void)
 {
-    gps_state_t gps = {0};
-    if (!gps_is_fresh_and_valid(&gps)) {
-        wait_for_gps_recovery();
-    }
-
     int idx = ducb_select_index();
     int channel = g_ducb_channels[idx].channel;
     int dwell_ms = dwell_ms_for_tier(g_ducb_channels[idx].tier);
@@ -1577,22 +1501,18 @@ static void wardrive_task(void *arg)
 
 void app_main(void)
 {
+    init_seen_buffers();
     init_link_uart();
     xTaskCreate(uart_rx_task, "uart_rx_task", 4096, NULL, 8, NULL);
 
-    ESP_LOGI(TAG, "Stage 1/4: waiting for SD card mount");
+    ESP_LOGI(TAG, "Stage 1/3: waiting for SD card mount");
     wait_for_sd_ready();
 
-    ESP_LOGI(TAG, "Stage 2/4: waiting for valid GPS fix from C6");
-    wait_for_gps_fix_startup();
-
-    ESP_LOGI(TAG, "Stage 3/4: init NVS + Wi-Fi");
+    ESP_LOGI(TAG, "Stage 2/3: init NVS + Wi-Fi");
     ESP_ERROR_CHECK(init_nvs_wifi());
     channel_time_load_state_from_nvs();
 
-    init_seen_buffers();
-
-    ESP_LOGI(TAG, "Stage 4/4: starting wardrive engine (C5=5GHz promisc, C6=2.4GHz AP24 ingest)");
+    ESP_LOGI(TAG, "Stage 3/3: starting wardrive engine (C5=5GHz promisc, C6=2.4GHz AP24 ingest)");
     xTaskCreate(wardrive_task, "wardrive_task", 8192, NULL, 5, NULL);
     xTaskCreate(command_task, "command_task", 6144, NULL, 2, NULL);
 }
