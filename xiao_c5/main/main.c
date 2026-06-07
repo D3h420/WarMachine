@@ -68,7 +68,7 @@ static const char *TAG = "C5_LOGGER";
 static const char *MOUNT_POINT = "/sdcard";
 static char g_log_path[64] = "/sdcard/wardrive_1.log";
 static const char *WIGLE_HEADER_1 =
-    "WigleWifi-1.6,appRelease=v1.2,model=WarMachine,release=v1.1,device=C5&&C6,display=none,board=ESP32C5+ESP32C6,brand=D3h420";
+    "WigleWifi-1.6,appRelease=WarMachine,model=C5&&C6,release=v1.1";
 static const char *WIGLE_HEADER_2 =
     "MAC,SSID,AuthMode,FirstSeen,Channel,Frequency,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,RCOIs,MfgrId,Type";
 
@@ -507,18 +507,7 @@ static bool ensure_log_header(void)
         ESP_LOGW(TAG, "Existing log is not WiGLE format, recreating %s", g_log_path);
     }
 
-    f = fopen(g_log_path, "w");
-    if (!f) {
-        return false;
-    }
-    fprintf(f, "%s\n", WIGLE_HEADER_1);
-    fprintf(f, "%s\n", WIGLE_HEADER_2);
-    fflush(f);
-    fsync(fileno(f));
-    fclose(f);
-    g_log_header_ready = true;
-    ESP_LOGI(TAG, "Created WiGLE log header: %s", g_log_path);
-    return true;
+    return false;
 }
 
 static void init_link_uart(void)
@@ -1061,29 +1050,49 @@ static int copy_dirty_entries(seen_ap_t *out, int out_cap)
             continue;
         }
         out[copied++] = g_seen_aps[i];
-        g_seen_aps[i].dirty = false;
     }
     portEXIT_CRITICAL(&g_seen_lock);
 
     return copied;
 }
 
-static void write_entries_to_log(const seen_ap_t *entries, int count)
+static void mark_entries_clean(const seen_ap_t *entries, int count)
+{
+    if (!entries || count <= 0) {
+        return;
+    }
+
+    portENTER_CRITICAL(&g_seen_lock);
+    for (int i = 0; i < count; i++) {
+        int idx = seen_find_by_bssid_unsafe(entries[i].bssid);
+        if (idx >= 0) {
+            g_seen_aps[idx].dirty = false;
+        }
+    }
+    portEXIT_CRITICAL(&g_seen_lock);
+}
+
+static int write_entries_to_log(const seen_ap_t *entries, int count)
 {
     if (!entries || count <= 0 || !g_sd_ready) {
-        return;
-    }
-    if (!ensure_log_header()) {
-        ESP_LOGE(TAG, "Cannot prepare WiGLE log header: %s", g_log_path);
-        return;
+        return 0;
     }
 
-    FILE *f = fopen(g_log_path, "a");
+    bool append = ensure_log_header();
+    FILE *f = fopen(g_log_path, append ? "a" : "w");
     if (!f) {
         ESP_LOGE(TAG, "Cannot open %s", g_log_path);
-        return;
+        return 0;
     }
 
+    if (!append) {
+        fprintf(f, "%s\n", WIGLE_HEADER_1);
+        fprintf(f, "%s\n", WIGLE_HEADER_2);
+        g_log_header_ready = true;
+        ESP_LOGI(TAG, "Created WiGLE log header: %s", g_log_path);
+    }
+
+    int written = 0;
     for (int i = 0; i < count; i++) {
         char mac[18];
         char ssid_esc[80];
@@ -1095,23 +1104,28 @@ static void write_entries_to_log(const seen_ap_t *entries, int count)
         csv_escape_ssid((const uint8_t *)entries[i].ssid, strnlen(entries[i].ssid, 32), ssid_esc, sizeof(ssid_esc));
         int frequency_mhz = channel_to_frequency_mhz(entries[i].channel);
 
-        fprintf(f, "%s,%s,%s,%s,%u,%d,%d,%.7f,%.7f,%.2f,%.2f,,,WIFI\n",
-                mac,
-                ssid_esc,
-                authmode_to_wigle(entries[i].authmode),
-                entries[i].first_seen[0] ? entries[i].first_seen : "1970-01-01 00:00:00",
-                entries[i].channel,
-                frequency_mhz,
-                (int)entries[i].rssi,
-                entries[i].gps_valid ? entries[i].lat : 0.0f,
-                entries[i].gps_valid ? entries[i].lon : 0.0f,
-                entries[i].gps_valid ? entries[i].alt_m : 0.0f,
-                entries[i].gps_valid ? entries[i].hdop : 0.0f);
+        int row_ret = fprintf(f, "%s,%s,%s,%s,%u,%d,%d,%.7f,%.7f,%.2f,%.2f,,,WIFI\n",
+                              mac,
+                              ssid_esc,
+                              authmode_to_wigle(entries[i].authmode),
+                              entries[i].first_seen[0] ? entries[i].first_seen : "1970-01-01 00:00:00",
+                              entries[i].channel,
+                              frequency_mhz,
+                              (int)entries[i].rssi,
+                              entries[i].gps_valid ? entries[i].lat : 0.0f,
+                              entries[i].gps_valid ? entries[i].lon : 0.0f,
+                              entries[i].gps_valid ? entries[i].alt_m : 0.0f,
+                              entries[i].gps_valid ? entries[i].hdop : 0.0f);
+        if (row_ret > 0) {
+            written++;
+        }
     }
 
     fflush(f);
     fsync(fileno(f));
     fclose(f);
+    ESP_LOGI(TAG, "Wrote %d/%d AP rows to %s", written, count, g_log_path);
+    return written;
 }
 
 static void flush_dirty_entries_if_needed(bool force, uint32_t min_dirty, uint32_t min_interval_ms)
@@ -1150,12 +1164,15 @@ static void flush_dirty_entries_if_needed(bool force, uint32_t min_dirty, uint32
         return;
     }
 
-    write_entries_to_log(g_flush_buf, copied);
-    last_flush_ms = now_ms;
+    int written = write_entries_to_log(g_flush_buf, copied);
+    if (written == copied) {
+        mark_entries_clean(g_flush_buf, copied);
+        last_flush_ms = now_ms;
+    }
 
     ESP_LOGI(TAG,
-             "Flushed %d AP rows to log (seen=%" PRIu32 ", dedup=%" PRIu32 ", dropped=%" PRIu32 ")",
-             copied, seen_count, dedup_hits, dropped);
+             "Flush result: copied=%d written=%d (seen=%" PRIu32 ", dedup=%" PRIu32 ", dropped=%" PRIu32 ")",
+             copied, written, seen_count, dedup_hits, dropped);
 }
 
 static uint32_t run_scan_channel(uint8_t channel, const gps_state_t *gps, bool gps_ok, uint32_t min_ms, uint32_t max_ms)

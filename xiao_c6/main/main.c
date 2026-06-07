@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <inttypes.h>
 #include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -93,6 +94,10 @@ static ap24_seen_t *g_ap24_seen = NULL;
 static ap24_seen_t *g_ap24_flush_buf = NULL;
 static int g_ap24_seen_count = 0;
 static uint32_t g_ap24_dropped = 0;
+static uint32_t g_gps_rx_bytes = 0;
+static uint32_t g_gps_rx_lines = 0;
+static uint32_t g_gps_rmc_lines = 0;
+static uint32_t g_gps_gga_lines = 0;
 static volatile uint32_t g_ap24_new_since_dwell = 0;
 static ap24_channel_t g_ap24_channels[AP24_CHANNEL_COUNT];
 static int g_ap24_channel_count = 0;
@@ -212,14 +217,22 @@ static void gps_task(void *arg) {
     while (1) {
         int r = uart_read_bytes(GPS_UART_NUM, &b, 1, pdMS_TO_TICKS(50));
         if (r == 1) {
+            g_gps_rx_bytes++;
             if (b == '\n') {
                 line[idx] = '\0';
                 if (idx > 6 && line[0] == '$') {
+                    g_gps_rx_lines++;
                     char tmp[128];
                     strncpy(tmp, line, sizeof(tmp) - 1);
                     tmp[sizeof(tmp) - 1] = '\0';
-                    if (strstr(tmp, "RMC")) parse_rmc(tmp);
-                    if (strstr(tmp, "GGA")) parse_gga(tmp);
+                    if (strstr(tmp, "RMC")) {
+                        g_gps_rmc_lines++;
+                        parse_rmc(tmp);
+                    }
+                    if (strstr(tmp, "GGA")) {
+                        g_gps_gga_lines++;
+                        parse_gga(tmp);
+                    }
                 }
                 idx = 0;
             } else if (b != '\r' && idx < (int)sizeof(line) - 1) {
@@ -238,6 +251,23 @@ static void gps_task(void *arg) {
                      (long long)msg_ms, g_fix.lat, g_fix.lon, g_fix.alt_m, g_fix.sats, g_fix.hdop,
                      g_fix.date_utc, g_fix.time_utc, g_fix.valid ? 1 : 0);
             link_uart_write(out);
+        }
+
+        static int64_t last_diag = 0;
+        if ((now - last_diag) >= 5000) {
+            last_diag = now;
+            ESP_LOGI(TAG,
+                     "GPS diag: bytes=%" PRIu32 " lines=%" PRIu32 " rmc=%" PRIu32 " gga=%" PRIu32
+                     " valid=%d sats=%d lat=%.6f lon=%.6f hdop=%.2f",
+                     g_gps_rx_bytes,
+                     g_gps_rx_lines,
+                     g_gps_rmc_lines,
+                     g_gps_gga_lines,
+                     g_fix.valid ? 1 : 0,
+                     g_fix.sats,
+                     g_fix.lat,
+                     g_fix.lon,
+                     g_fix.hdop);
         }
     }
 }
