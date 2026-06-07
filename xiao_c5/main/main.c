@@ -132,6 +132,7 @@ static const uint8_t promisc_ch_5_dfs[]        = {52, 56, 60, 64, 100, 104, 108,
 static bool g_sd_ready = false;
 static bool g_sd_spi_bus_inited = false;
 static bool g_nvs_ready = false;
+static bool g_log_header_ready = false;
 
 static gps_state_t g_gps = {0};
 static int64_t g_last_gps_rx_local_ms = 0;
@@ -484,8 +485,12 @@ static esp_err_t init_sd_spi(sdmmc_card_t **out_card)
     return ESP_OK;
 }
 
-static void ensure_log_header(void)
+static bool ensure_log_header(void)
 {
+    if (g_log_header_ready) {
+        return true;
+    }
+
     FILE *f = fopen(g_log_path, "r");
     if (f) {
         char line1[256] = {0};
@@ -496,21 +501,24 @@ static void ensure_log_header(void)
         if (r1 && r2 &&
             strncmp(line1, "WigleWifi-1.6,", strlen("WigleWifi-1.6,")) == 0 &&
             strncmp(line2, WIGLE_HEADER_2, strlen(WIGLE_HEADER_2)) == 0) {
-            return;
+            g_log_header_ready = true;
+            return true;
         }
         ESP_LOGW(TAG, "Existing log is not WiGLE format, recreating %s", g_log_path);
     }
 
     f = fopen(g_log_path, "w");
     if (!f) {
-        return;
+        return false;
     }
     fprintf(f, "%s\n", WIGLE_HEADER_1);
     fprintf(f, "%s\n", WIGLE_HEADER_2);
     fflush(f);
     fsync(fileno(f));
     fclose(f);
+    g_log_header_ready = true;
     ESP_LOGI(TAG, "Created WiGLE log header: %s", g_log_path);
+    return true;
 }
 
 static void init_link_uart(void)
@@ -693,7 +701,6 @@ static void wait_for_sd_ready(void)
             g_sd_ready = true;
             sdmmc_card_print_info(stdout, card);
             select_next_log_path();
-            ensure_log_header();
             ESP_LOGI(TAG, "SD ready after %d attempt(s)", attempt);
             return;
         }
@@ -1066,6 +1073,10 @@ static void write_entries_to_log(const seen_ap_t *entries, int count)
     if (!entries || count <= 0 || !g_sd_ready) {
         return;
     }
+    if (!ensure_log_header()) {
+        ESP_LOGE(TAG, "Cannot prepare WiGLE log header: %s", g_log_path);
+        return;
+    }
 
     FILE *f = fopen(g_log_path, "a");
     if (!f) {
@@ -1192,7 +1203,7 @@ static uint32_t run_scan_channel(uint8_t channel, const gps_state_t *gps, bool g
     portENTER_CRITICAL(&g_seen_lock);
     for (int i = 0; i < ap_count; i++) {
         char ssid_local[33] = {0};
-        size_t ssid_len = recs[i].ssid_len;
+        size_t ssid_len = strnlen((const char *)recs[i].ssid, sizeof(recs[i].ssid));
         if (ssid_len > 32) ssid_len = 32;
         memcpy(ssid_local, recs[i].ssid, ssid_len);
         ssid_local[ssid_len] = '\0';

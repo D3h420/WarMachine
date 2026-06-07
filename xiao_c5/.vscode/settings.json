@@ -12,7 +12,7 @@
   ],
   "idf.flashType": "UART",
   "idf.port": "/dev/tty.usbmodem2401",
-  "idf.monitorPort": "/dev/tty.usbmodem2301",
+  "idf.monitorPort": "/dev/tty.usbmodem2401",
   "idf.openOcdConfigs": [
     "board/esp32c5-builtin.cfg"
   ]
