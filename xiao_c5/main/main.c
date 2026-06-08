@@ -102,9 +102,7 @@ typedef struct {
 } seen_ap_t;
 
 typedef enum {
-    CH_TIER_24_PRIMARY = 0,
-    CH_TIER_24_SECONDARY,
-    CH_TIER_5_NON_DFS,
+    CH_TIER_5_NON_DFS = 0,
     CH_TIER_5_DFS,
 } channel_tier_t;
 
@@ -116,22 +114,17 @@ typedef struct {
     int total_pulls;
 } ducb_channel_t;
 
-static const uint8_t promisc_ch_24_primary[]   = {1, 6, 11};
-static const uint8_t promisc_ch_24_secondary[] = {2, 3, 4, 5, 7, 8, 9, 10, 12, 13};
 static const uint8_t promisc_ch_5_non_dfs[]    = {36, 40, 44, 48, 149, 153, 157, 161, 165};
 static const uint8_t promisc_ch_5_dfs[]        = {52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 169, 173, 177};
 
-#define PROMISC_24_PRIMARY_COUNT   (sizeof(promisc_ch_24_primary) / sizeof(promisc_ch_24_primary[0]))
-#define PROMISC_24_SECONDARY_COUNT (sizeof(promisc_ch_24_secondary) / sizeof(promisc_ch_24_secondary[0]))
 #define PROMISC_5_NON_DFS_COUNT    (sizeof(promisc_ch_5_non_dfs) / sizeof(promisc_ch_5_non_dfs[0]))
 #define PROMISC_5_DFS_COUNT        (sizeof(promisc_ch_5_dfs) / sizeof(promisc_ch_5_dfs[0]))
-#define PROMISC_TOTAL_CHANNELS     (PROMISC_24_PRIMARY_COUNT + PROMISC_24_SECONDARY_COUNT + PROMISC_5_NON_DFS_COUNT + PROMISC_5_DFS_COUNT)
+#define PROMISC_TOTAL_CHANNELS     (PROMISC_5_NON_DFS_COUNT + PROMISC_5_DFS_COUNT)
 
 #define DUCB_GAMMA                 0.99
 #define DUCB_C                     1.0
-#define DWELL_PRIMARY_MS           500
-#define DWELL_DEFAULT_MS           400
-#define DWELL_DFS_MS               250
+#define DWELL_5_NON_DFS_MS         120
+#define DWELL_5_DFS_MS             90
 
 static bool g_sd_ready = false;
 static bool g_sd_spi_bus_inited = false;
@@ -152,6 +145,7 @@ static int g_seen_count = 0;
 static uint32_t g_total_new_aps = 0;
 static uint32_t g_total_dedup_hits = 0;
 static uint32_t g_total_dropped_aps = 0;
+static uint32_t g_total_remote_24_aps = 0;
 static volatile uint32_t g_promisc_new_since_dwell = 0;
 
 static ducb_channel_t g_ducb_channels[PROMISC_TOTAL_CHANNELS];
@@ -161,6 +155,14 @@ static double g_ducb_discounted_total = 0.0;
 static portMUX_TYPE g_gps_lock = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE g_cfg_lock = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE g_seen_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static bool seen_upsert_unsafe(const uint8_t bssid[6],
+                               const char *ssid,
+                               uint8_t channel,
+                               int8_t rssi,
+                               wifi_auth_mode_t authmode,
+                               const gps_state_t *gps,
+                               bool gps_valid);
 
 static const char *authmode_to_wigle(wifi_auth_mode_t authmode)
 {
@@ -416,6 +418,7 @@ static esp_err_t init_nvs_wifi(void)
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_set_band_mode(WIFI_BAND_MODE_5G_ONLY));
 
     return ESP_OK;
 }
@@ -547,6 +550,119 @@ static void parse_gps_line(const char *line)
     g_gps = next;
     g_last_gps_rx_local_ms = esp_log_timestamp();
     portEXIT_CRITICAL(&g_gps_lock);
+}
+
+static int hex_nibble(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool parse_bssid_text(const char *text, uint8_t out[6])
+{
+    if (!text || strlen(text) != 17) {
+        return false;
+    }
+
+    for (int i = 0; i < 6; i++) {
+        int hi = hex_nibble(text[i * 3]);
+        int lo = hex_nibble(text[i * 3 + 1]);
+        if (hi < 0 || lo < 0) {
+            return false;
+        }
+        out[i] = (uint8_t)((hi << 4) | lo);
+        if (i < 5 && text[i * 3 + 2] != ':') {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool decode_ssid_hex(const char *hex, char out[33])
+{
+    if (!out) {
+        return false;
+    }
+
+    out[0] = '\0';
+    if (!hex || strcmp(hex, "-") == 0) {
+        return true;
+    }
+
+    size_t len = strlen(hex);
+    if ((len % 2) != 0 || len > 64) {
+        return false;
+    }
+
+    size_t out_len = len / 2;
+    for (size_t i = 0; i < out_len; i++) {
+        int hi = hex_nibble(hex[i * 2]);
+        int lo = hex_nibble(hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0) {
+            return false;
+        }
+        out[i] = (char)((hi << 4) | lo);
+    }
+    out[out_len] = '\0';
+
+    return true;
+}
+
+static void parse_remote_ap24_line(const char *line)
+{
+    if (strncmp(line, "AP24,", 5) != 0 || !g_seen_aps) {
+        return;
+    }
+
+    gps_state_t gps = {0};
+    bool gps_ok = gps_is_fresh_and_valid(&gps);
+    if (!gps_ok) {
+        return;
+    }
+
+    char buf[180];
+    strncpy(buf, line, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    char *t[6] = {0};
+    int n = 0;
+    char *p = strtok(buf + 5, ",");
+    while (p && n < 6) {
+        t[n++] = p;
+        p = strtok(NULL, ",");
+    }
+    if (n != 6) {
+        return;
+    }
+
+    uint8_t bssid[6];
+    char ssid[33];
+    if (!parse_bssid_text(t[1], bssid) || !decode_ssid_hex(t[5], ssid)) {
+        return;
+    }
+
+    long channel = strtol(t[2], NULL, 10);
+    long rssi = strtol(t[3], NULL, 10);
+    long auth = strtol(t[4], NULL, 10);
+    if (channel < 1 || channel > 14 || rssi < -127 || rssi > 0) {
+        return;
+    }
+
+    portENTER_CRITICAL(&g_seen_lock);
+    seen_upsert_unsafe(
+        bssid,
+        ssid,
+        (uint8_t)channel,
+        (int8_t)rssi,
+        (wifi_auth_mode_t)auth,
+        &gps,
+        gps_ok
+    );
+    g_total_remote_24_aps++;
+    portEXIT_CRITICAL(&g_seen_lock);
 }
 
 static void wait_for_sd_ready(void)
@@ -825,24 +941,6 @@ static void ducb_init(void)
     g_ducb_channel_count = 0;
     g_ducb_discounted_total = 0.0;
 
-    for (int i = 0; i < (int)PROMISC_24_PRIMARY_COUNT; i++) {
-        ducb_channel_t *slot = &g_ducb_channels[g_ducb_channel_count++];
-        slot->channel = promisc_ch_24_primary[i];
-        slot->tier = CH_TIER_24_PRIMARY;
-        slot->discounted_reward = 0.5;
-        slot->discounted_pulls = 0.0;
-        slot->total_pulls = 0;
-    }
-
-    for (int i = 0; i < (int)PROMISC_24_SECONDARY_COUNT; i++) {
-        ducb_channel_t *slot = &g_ducb_channels[g_ducb_channel_count++];
-        slot->channel = promisc_ch_24_secondary[i];
-        slot->tier = CH_TIER_24_SECONDARY;
-        slot->discounted_reward = 0.0;
-        slot->discounted_pulls = 0.0;
-        slot->total_pulls = 0;
-    }
-
     for (int i = 0; i < (int)PROMISC_5_NON_DFS_COUNT; i++) {
         ducb_channel_t *slot = &g_ducb_channels[g_ducb_channel_count++];
         slot->channel = promisc_ch_5_non_dfs[i];
@@ -902,16 +1000,12 @@ static void ducb_update(int channel_idx, double reward)
 static int dwell_ms_for_tier(channel_tier_t tier)
 {
     switch (tier) {
-        case CH_TIER_24_PRIMARY:
-            return DWELL_PRIMARY_MS;
-        case CH_TIER_24_SECONDARY:
-            return DWELL_DEFAULT_MS;
         case CH_TIER_5_NON_DFS:
-            return DWELL_DEFAULT_MS;
+            return DWELL_5_NON_DFS_MS;
         case CH_TIER_5_DFS:
-            return DWELL_DFS_MS;
+            return DWELL_5_DFS_MS;
         default:
-            return DWELL_DEFAULT_MS;
+            return DWELL_5_NON_DFS_MS;
     }
 }
 
@@ -1146,6 +1240,7 @@ static void init_seen_buffers(void)
 static void print_help(void)
 {
     printf("\nCommands:\n");
+    printf("  C5 scans/logs 5GHz; C6 streams 2.4GHz as AP24 records\n");
     printf("  help\n");
     printf("  status\n");
     printf("  mode read\n");
@@ -1170,12 +1265,14 @@ static void print_status(void)
     uint32_t dedup = 0;
     uint32_t discovered = 0;
     uint32_t dropped = 0;
+    uint32_t remote24 = 0;
 
     portENTER_CRITICAL(&g_seen_lock);
     seen = (uint32_t)g_seen_count;
     discovered = g_total_new_aps;
     dedup = g_total_dedup_hits;
     dropped = g_total_dropped_aps;
+    remote24 = g_total_remote_24_aps;
     for (int i = 0; i < g_seen_count; i++) {
         if (g_seen_aps[i].dirty) {
             dirty++;
@@ -1184,7 +1281,7 @@ static void print_status(void)
     portEXIT_CRITICAL(&g_seen_lock);
 
     ESP_LOGI(TAG,
-             "status: mode=%s gps=%s lat=%.6f lon=%.6f sats=%d log=%s channel_time[min=%u,max=%u] seen=%" PRIu32 " dirty=%" PRIu32 " new=%" PRIu32 " dedup=%" PRIu32 " dropped=%" PRIu32,
+             "status: mode=%s gps=%s lat=%.6f lon=%.6f sats=%d log=%s channel_time[min=%u,max=%u] seen=%" PRIu32 " dirty=%" PRIu32 " new=%" PRIu32 " remote24=%" PRIu32 " dedup=%" PRIu32 " dropped=%" PRIu32,
              mode,
              gps_ok ? "ok" : "lost",
              gps.lat,
@@ -1196,6 +1293,7 @@ static void print_status(void)
              seen,
              dirty,
              discovered,
+             remote24,
              dedup,
              dropped);
 }
@@ -1338,6 +1436,7 @@ static void uart_rx_task(void *arg)
         if (b == '\n') {
             line[idx] = '\0';
             parse_gps_line(line);
+            parse_remote_ap24_line(line);
             idx = 0;
             continue;
         }
@@ -1381,10 +1480,8 @@ static void wardrive_task(void *arg)
                 promisc_on = true;
 
                 ESP_LOGI(TAG,
-                         "Promisc wardrive started. Channels=%d (primary:%d secondary:%d 5G:%d DFS:%d)",
+                         "Promisc wardrive started. C5 local 5GHz channels=%d (non_dfs:%d dfs:%d); C6 supplies AP24 2.4GHz",
                          g_ducb_channel_count,
-                         (int)PROMISC_24_PRIMARY_COUNT,
-                         (int)PROMISC_24_SECONDARY_COUNT,
                          (int)PROMISC_5_NON_DFS_COUNT,
                          (int)PROMISC_5_DFS_COUNT);
             }
