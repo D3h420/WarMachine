@@ -41,26 +41,25 @@
 #define SD_SCK_GPIO      8
 #define SD_CS_GPIO       25
 
-#define SCAN_PAUSE_MS             500
+#define SCAN_PAUSE_MS             1500
 #define SD_RETRY_MS               2000
+#define GPS_WAIT_POLL_MS          250
+#define GPS_WAIT_LOG_MS           3000
 #define GPS_STALE_MS              5000
 #define PROMISC_FLUSH_INTERVAL_MS 30000
 #define PROMISC_FLUSH_INTERVAL_AP 40
 #define SCAN_FLUSH_INTERVAL_MS    15000
 
-#define CHANNEL_TIME_MIN_LIMIT    250
-#define CHANNEL_TIME_MAX_LIMIT    500
+#define CHANNEL_TIME_MIN_LIMIT    1500
+#define CHANNEL_TIME_MAX_LIMIT    2000
 #define SCAN_TIME_NVS_NAMESPACE   "scancfg"
 #define SCAN_TIME_NVS_KEY_MIN     "min_time"
 #define SCAN_TIME_NVS_KEY_MAX     "max_time"
 
-#define DEFAULT_SCAN_MIN_TIME_MS  80
-#define DEFAULT_SCAN_MAX_TIME_MS  140
+#define DEFAULT_SCAN_MIN_TIME_MS  100
+#define DEFAULT_SCAN_MAX_TIME_MS  300
 
-#define MAX_SEEN_APS              2048
-#define FLUSH_BATCH_APS           96
-#define WIFI_RSSI_RELOG_DELTA_DB  5
-#define WIFI_LOCATION_RELOG_M     25.0f
+#define MAX_SEEN_APS              1024
 
 static const char *TAG = "C5_LOGGER";
 static const char *MOUNT_POINT = "/sdcard";
@@ -103,7 +102,9 @@ typedef struct {
 } seen_ap_t;
 
 typedef enum {
-    CH_TIER_5_NON_DFS = 0,
+    CH_TIER_24_PRIMARY = 0,
+    CH_TIER_24_SECONDARY,
+    CH_TIER_5_NON_DFS,
     CH_TIER_5_DFS,
 } channel_tier_t;
 
@@ -115,17 +116,22 @@ typedef struct {
     int total_pulls;
 } ducb_channel_t;
 
+static const uint8_t promisc_ch_24_primary[]   = {1, 6, 11};
+static const uint8_t promisc_ch_24_secondary[] = {2, 3, 4, 5, 7, 8, 9, 10, 12, 13};
 static const uint8_t promisc_ch_5_non_dfs[]    = {36, 40, 44, 48, 149, 153, 157, 161, 165};
 static const uint8_t promisc_ch_5_dfs[]        = {52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 169, 173, 177};
 
+#define PROMISC_24_PRIMARY_COUNT   (sizeof(promisc_ch_24_primary) / sizeof(promisc_ch_24_primary[0]))
+#define PROMISC_24_SECONDARY_COUNT (sizeof(promisc_ch_24_secondary) / sizeof(promisc_ch_24_secondary[0]))
 #define PROMISC_5_NON_DFS_COUNT    (sizeof(promisc_ch_5_non_dfs) / sizeof(promisc_ch_5_non_dfs[0]))
 #define PROMISC_5_DFS_COUNT        (sizeof(promisc_ch_5_dfs) / sizeof(promisc_ch_5_dfs[0]))
-#define PROMISC_TOTAL_CHANNELS     (PROMISC_5_NON_DFS_COUNT + PROMISC_5_DFS_COUNT)
+#define PROMISC_TOTAL_CHANNELS     (PROMISC_24_PRIMARY_COUNT + PROMISC_24_SECONDARY_COUNT + PROMISC_5_NON_DFS_COUNT + PROMISC_5_DFS_COUNT)
 
 #define DUCB_GAMMA                 0.99
 #define DUCB_C                     1.0
-#define DWELL_5_NON_DFS_MS         120
-#define DWELL_5_DFS_MS             90
+#define DWELL_PRIMARY_MS           500
+#define DWELL_DEFAULT_MS           400
+#define DWELL_DFS_MS               250
 
 static bool g_sd_ready = false;
 static bool g_sd_spi_bus_inited = false;
@@ -146,7 +152,6 @@ static int g_seen_count = 0;
 static uint32_t g_total_new_aps = 0;
 static uint32_t g_total_dedup_hits = 0;
 static uint32_t g_total_dropped_aps = 0;
-static uint32_t g_total_remote_24_aps = 0;
 static volatile uint32_t g_promisc_new_since_dwell = 0;
 
 static ducb_channel_t g_ducb_channels[PROMISC_TOTAL_CHANNELS];
@@ -157,19 +162,11 @@ static portMUX_TYPE g_gps_lock = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE g_cfg_lock = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE g_seen_lock = portMUX_INITIALIZER_UNLOCKED;
 
-static bool seen_upsert_unsafe(const uint8_t bssid[6],
-                               const char *ssid,
-                               uint8_t channel,
-                               int8_t rssi,
-                               wifi_auth_mode_t authmode,
-                               const gps_state_t *gps,
-                               bool gps_valid);
-
 static const char *authmode_to_wigle(wifi_auth_mode_t authmode)
 {
     switch (authmode) {
         case WIFI_AUTH_OPEN:
-            return "[Open]";
+            return "[OPEN]";
         case WIFI_AUTH_WEP:
             return "[WEP]";
         case WIFI_AUTH_WPA_PSK:
@@ -287,13 +284,13 @@ static void format_first_seen(const gps_state_t *gps, char out[32])
 static int channel_to_frequency_mhz(uint8_t channel)
 {
     if (channel >= 1 && channel <= 13) {
-        return 2407 + ((int)channel * 5);
+        return 2407 + (channel * 5);
     }
     if (channel == 14) {
         return 2484;
     }
     if (channel >= 32 && channel <= 177) {
-        return 5000 + ((int)channel * 5);
+        return 5000 + (channel * 5);
     }
     return 0;
 }
@@ -310,17 +307,6 @@ static void select_next_log_path(void)
 
     snprintf(g_log_path, sizeof(g_log_path), "%s/wardrive_overflow.log", MOUNT_POINT);
     ESP_LOGW(TAG, "Log index limit reached, using fallback log: %s", g_log_path);
-}
-
-static float gps_distance_m(float lat_a, float lon_a, float lat_b, float lon_b)
-{
-    const float deg_to_rad = 0.01745329251994329577f;
-    const float earth_radius_m = 6371000.0f;
-    float lat_a_rad = lat_a * deg_to_rad;
-    float lat_b_rad = lat_b * deg_to_rad;
-    float x = (lon_b - lon_a) * deg_to_rad * cosf((lat_a_rad + lat_b_rad) * 0.5f);
-    float y = (lat_b - lat_a) * deg_to_rad;
-    return sqrtf((x * x) + (y * y)) * earth_radius_m;
 }
 
 static void gps_snapshot(gps_state_t *out, int64_t *last_rx_ms)
@@ -352,6 +338,66 @@ static bool gps_is_fresh_and_valid(gps_state_t *snapshot)
     return gps_fresh && local.valid && (local.sats > 0) && coords_present;
 }
 
+static void wait_for_gps_fix_startup(void)
+{
+    int64_t last_log_ms = -GPS_WAIT_LOG_MS;
+    while (1) {
+        gps_state_t gps = {0};
+        int64_t last_rx = 0;
+        gps_snapshot(&gps, &last_rx);
+
+        int64_t now = esp_log_timestamp();
+        bool got_any_frame = last_rx > 0;
+        bool gps_fresh = got_any_frame && ((now - last_rx) <= GPS_STALE_MS);
+        bool coords_present = (fabsf(gps.lat) > 0.000001f) || (fabsf(gps.lon) > 0.000001f);
+        bool ready = gps_fresh && gps.valid && (gps.sats > 0) && coords_present;
+
+        if (ready) {
+            ESP_LOGI(TAG, "GPS fix ready: lat=%.6f lon=%.6f sats=%d hdop=%.2f",
+                     gps.lat, gps.lon, gps.sats, gps.hdop);
+            return;
+        }
+
+        if ((now - last_log_ms) >= GPS_WAIT_LOG_MS) {
+            if (!got_any_frame) {
+                ESP_LOGW(TAG, "Waiting for GPS data from C6 (no frames yet)");
+            } else if (!gps_fresh) {
+                ESP_LOGW(TAG, "Waiting for fresh GPS data (last frame %lld ms ago)",
+                         (long long)(now - last_rx));
+            } else {
+                ESP_LOGW(TAG, "Waiting for GPS fix: valid=%d sats=%d lat=%.6f lon=%.6f",
+                         gps.valid ? 1 : 0, gps.sats, gps.lat, gps.lon);
+            }
+            last_log_ms = now;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(GPS_WAIT_POLL_MS));
+    }
+}
+
+static void wait_for_gps_recovery(void)
+{
+    ESP_LOGW(TAG, "GPS fix lost - pausing wardrive until fix recovers...");
+    int64_t last_log_ms = 0;
+
+    while (1) {
+        gps_state_t gps = {0};
+        if (gps_is_fresh_and_valid(&gps)) {
+            ESP_LOGI(TAG, "GPS fix recovered: lat=%.6f lon=%.6f sats=%d hdop=%.2f",
+                     gps.lat, gps.lon, gps.sats, gps.hdop);
+            return;
+        }
+
+        int64_t now = esp_log_timestamp();
+        if ((now - last_log_ms) >= GPS_WAIT_LOG_MS) {
+            ESP_LOGW(TAG, "Still waiting for GPS recovery...");
+            last_log_ms = now;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(GPS_WAIT_POLL_MS));
+    }
+}
+
 static esp_err_t init_nvs_wifi(void)
 {
     esp_err_t ret = nvs_flash_init();
@@ -370,7 +416,6 @@ static esp_err_t init_nvs_wifi(void)
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_ERROR_CHECK(esp_wifi_set_band_mode(WIFI_BAND_MODE_5G_ONLY));
 
     return ESP_OK;
 }
@@ -504,116 +549,6 @@ static void parse_gps_line(const char *line)
     portEXIT_CRITICAL(&g_gps_lock);
 }
 
-static int hex_nibble(char c)
-{
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
-static bool parse_bssid_text(const char *text, uint8_t out[6])
-{
-    if (!text || strlen(text) != 17) {
-        return false;
-    }
-
-    for (int i = 0; i < 6; i++) {
-        int hi = hex_nibble(text[i * 3]);
-        int lo = hex_nibble(text[i * 3 + 1]);
-        if (hi < 0 || lo < 0) {
-            return false;
-        }
-        out[i] = (uint8_t)((hi << 4) | lo);
-        if (i < 5 && text[i * 3 + 2] != ':') {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-static bool decode_ssid_hex(const char *hex, char out[33])
-{
-    if (!out) {
-        return false;
-    }
-
-    out[0] = '\0';
-    if (!hex || strcmp(hex, "-") == 0) {
-        return true;
-    }
-
-    size_t len = strlen(hex);
-    if ((len % 2) != 0 || len > 64) {
-        return false;
-    }
-
-    size_t out_len = len / 2;
-    for (size_t i = 0; i < out_len; i++) {
-        int hi = hex_nibble(hex[i * 2]);
-        int lo = hex_nibble(hex[i * 2 + 1]);
-        if (hi < 0 || lo < 0) {
-            return false;
-        }
-        out[i] = (char)((hi << 4) | lo);
-    }
-    out[out_len] = '\0';
-
-    return true;
-}
-
-static void parse_remote_ap24_line(const char *line)
-{
-    if (strncmp(line, "AP24,", 5) != 0 || !g_seen_aps) {
-        return;
-    }
-
-    gps_state_t gps = {0};
-    bool gps_ok = gps_is_fresh_and_valid(&gps);
-
-    char buf[180];
-    strncpy(buf, line, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
-
-    char *t[6] = {0};
-    int n = 0;
-    char *p = strtok(buf + 5, ",");
-    while (p && n < 6) {
-        t[n++] = p;
-        p = strtok(NULL, ",");
-    }
-    if (n != 6) {
-        return;
-    }
-
-    uint8_t bssid[6];
-    char ssid[33];
-    if (!parse_bssid_text(t[1], bssid) || !decode_ssid_hex(t[5], ssid)) {
-        return;
-    }
-
-    long channel = strtol(t[2], NULL, 10);
-    long rssi = strtol(t[3], NULL, 10);
-    long auth = strtol(t[4], NULL, 10);
-    if (channel < 1 || channel > 14 || rssi < -127 || rssi > 0) {
-        return;
-    }
-
-    portENTER_CRITICAL(&g_seen_lock);
-    seen_upsert_unsafe(
-        bssid,
-        ssid,
-        (uint8_t)channel,
-        (int8_t)rssi,
-        (wifi_auth_mode_t)auth,
-        &gps,
-        gps_ok
-    );
-    g_total_remote_24_aps++;
-    portEXIT_CRITICAL(&g_seen_lock);
-}
-
 static void wait_for_sd_ready(void)
 {
     int attempt = 0;
@@ -718,47 +653,36 @@ static bool seen_upsert_unsafe(const uint8_t bssid[6],
 {
     int idx = seen_find_by_bssid_unsafe(bssid);
     if (idx >= 0) {
-        seen_ap_t *entry = &g_seen_aps[idx];
-        bool should_relog = false;
+        bool changed = false;
 
-        if (abs((int)rssi - (int)entry->rssi) >= WIFI_RSSI_RELOG_DELTA_DB) {
-            entry->rssi = rssi;
-            should_relog = true;
+        if (rssi > g_seen_aps[idx].rssi) {
+            g_seen_aps[idx].rssi = rssi;
+            changed = true;
         }
-        if (channel != 0 && entry->channel != channel) {
-            entry->channel = channel;
-            should_relog = true;
+        if (channel != 0 && g_seen_aps[idx].channel != channel) {
+            g_seen_aps[idx].channel = channel;
+            changed = true;
         }
-        if (ssid && ssid[0] != '\0' && strcmp(entry->ssid, ssid) != 0) {
-            strncpy(entry->ssid, ssid, sizeof(entry->ssid) - 1);
-            entry->ssid[sizeof(entry->ssid) - 1] = '\0';
-            should_relog = true;
+        if (ssid && ssid[0] != '\0' && strcmp(g_seen_aps[idx].ssid, ssid) != 0) {
+            strncpy(g_seen_aps[idx].ssid, ssid, sizeof(g_seen_aps[idx].ssid) - 1);
+            g_seen_aps[idx].ssid[sizeof(g_seen_aps[idx].ssid) - 1] = '\0';
+            changed = true;
         }
-        if (authmode != WIFI_AUTH_OPEN && entry->authmode != authmode) {
-            entry->authmode = authmode;
-            should_relog = true;
+        if (authmode != WIFI_AUTH_OPEN && g_seen_aps[idx].authmode != authmode) {
+            g_seen_aps[idx].authmode = authmode;
+            changed = true;
         }
         if (gps_valid && gps) {
-            if (!entry->gps_valid) {
-                format_first_seen(gps, entry->first_seen);
-                should_relog = true;
-            } else {
-                float moved_m = gps_distance_m(entry->lat, entry->lon, gps->lat, gps->lon);
-                if (moved_m >= WIFI_LOCATION_RELOG_M) {
-                    should_relog = true;
-                }
-            }
+            g_seen_aps[idx].lat = gps->lat;
+            g_seen_aps[idx].lon = gps->lon;
+            g_seen_aps[idx].alt_m = gps->alt_m;
+            g_seen_aps[idx].hdop = gps->hdop;
+            g_seen_aps[idx].gps_valid = true;
+            changed = true;
         }
 
-        if (should_relog) {
-            if (gps_valid && gps) {
-                entry->lat = gps->lat;
-                entry->lon = gps->lon;
-                entry->alt_m = gps->alt_m;
-                entry->hdop = gps->hdop;
-                entry->gps_valid = true;
-            }
-            entry->dirty = true;
+        if (changed) {
+            g_seen_aps[idx].dirty = true;
         }
 
         g_total_dedup_hits++;
@@ -901,11 +825,29 @@ static void ducb_init(void)
     g_ducb_channel_count = 0;
     g_ducb_discounted_total = 0.0;
 
+    for (int i = 0; i < (int)PROMISC_24_PRIMARY_COUNT; i++) {
+        ducb_channel_t *slot = &g_ducb_channels[g_ducb_channel_count++];
+        slot->channel = promisc_ch_24_primary[i];
+        slot->tier = CH_TIER_24_PRIMARY;
+        slot->discounted_reward = 0.5;
+        slot->discounted_pulls = 0.0;
+        slot->total_pulls = 0;
+    }
+
+    for (int i = 0; i < (int)PROMISC_24_SECONDARY_COUNT; i++) {
+        ducb_channel_t *slot = &g_ducb_channels[g_ducb_channel_count++];
+        slot->channel = promisc_ch_24_secondary[i];
+        slot->tier = CH_TIER_24_SECONDARY;
+        slot->discounted_reward = 0.0;
+        slot->discounted_pulls = 0.0;
+        slot->total_pulls = 0;
+    }
+
     for (int i = 0; i < (int)PROMISC_5_NON_DFS_COUNT; i++) {
         ducb_channel_t *slot = &g_ducb_channels[g_ducb_channel_count++];
         slot->channel = promisc_ch_5_non_dfs[i];
         slot->tier = CH_TIER_5_NON_DFS;
-        slot->discounted_reward = 0.25;
+        slot->discounted_reward = 0.0;
         slot->discounted_pulls = 0.0;
         slot->total_pulls = 0;
     }
@@ -960,12 +902,16 @@ static void ducb_update(int channel_idx, double reward)
 static int dwell_ms_for_tier(channel_tier_t tier)
 {
     switch (tier) {
+        case CH_TIER_24_PRIMARY:
+            return DWELL_PRIMARY_MS;
+        case CH_TIER_24_SECONDARY:
+            return DWELL_DEFAULT_MS;
         case CH_TIER_5_NON_DFS:
-            return DWELL_5_NON_DFS_MS;
+            return DWELL_DEFAULT_MS;
         case CH_TIER_5_DFS:
-            return DWELL_5_DFS_MS;
+            return DWELL_DFS_MS;
         default:
-            return DWELL_5_NON_DFS_MS;
+            return DWELL_DEFAULT_MS;
     }
 }
 
@@ -983,39 +929,24 @@ static int copy_dirty_entries(seen_ap_t *out, int out_cap)
             continue;
         }
         out[copied++] = g_seen_aps[i];
+        g_seen_aps[i].dirty = false;
     }
     portEXIT_CRITICAL(&g_seen_lock);
 
     return copied;
 }
 
-static void mark_entries_clean(const seen_ap_t *entries, int count)
-{
-    if (!entries || count <= 0) {
-        return;
-    }
-
-    portENTER_CRITICAL(&g_seen_lock);
-    for (int i = 0; i < count; i++) {
-        int idx = seen_find_by_bssid_unsafe(entries[i].bssid);
-        if (idx >= 0) {
-            g_seen_aps[idx].dirty = false;
-        }
-    }
-    portEXIT_CRITICAL(&g_seen_lock);
-}
-
-static int write_entries_to_log(const seen_ap_t *entries, int count)
+static void write_entries_to_log(const seen_ap_t *entries, int count)
 {
     if (!entries || count <= 0 || !g_sd_ready) {
-        return 0;
+        return;
     }
 
     bool append = ensure_log_header();
     FILE *f = fopen(g_log_path, append ? "a" : "w");
     if (!f) {
         ESP_LOGE(TAG, "Cannot open %s", g_log_path);
-        return 0;
+        return;
     }
 
     if (!append) {
@@ -1025,7 +956,6 @@ static int write_entries_to_log(const seen_ap_t *entries, int count)
         ESP_LOGI(TAG, "Created WiGLE log header: %s", g_log_path);
     }
 
-    int written = 0;
     for (int i = 0; i < count; i++) {
         char mac[18];
         char ssid_esc[80];
@@ -1037,28 +967,24 @@ static int write_entries_to_log(const seen_ap_t *entries, int count)
         csv_escape_ssid((const uint8_t *)entries[i].ssid, strnlen(entries[i].ssid, 32), ssid_esc, sizeof(ssid_esc));
         int frequency_mhz = channel_to_frequency_mhz(entries[i].channel);
 
-        int row_ret = fprintf(f, "%s,%s,%s,%s,%u,%d,%d,%.7f,%.7f,%.2f,%.2f,,,WIFI\n",
-                              mac,
-                              ssid_esc,
-                              authmode_to_wigle(entries[i].authmode),
-                              entries[i].first_seen[0] ? entries[i].first_seen : "1970-01-01 00:00:00",
-                              entries[i].channel,
-                              frequency_mhz,
-                              (int)entries[i].rssi,
-                              entries[i].gps_valid ? entries[i].lat : 0.0f,
-                              entries[i].gps_valid ? entries[i].lon : 0.0f,
-                              entries[i].gps_valid ? entries[i].alt_m : 0.0f,
-                              entries[i].gps_valid ? entries[i].hdop : 0.0f);
-        if (row_ret > 0) {
-            written++;
-        }
+        fprintf(f, "%s,%s,%s,%s,%u,%d,%d,%.7f,%.7f,%.2f,%.2f,,,WIFI\n",
+                mac,
+                ssid_esc,
+                authmode_to_wigle(entries[i].authmode),
+                entries[i].first_seen[0] ? entries[i].first_seen : "1970-01-01 00:00:00",
+                entries[i].channel,
+                frequency_mhz,
+                (int)entries[i].rssi,
+                entries[i].gps_valid ? entries[i].lat : 0.0f,
+                entries[i].gps_valid ? entries[i].lon : 0.0f,
+                entries[i].gps_valid ? entries[i].alt_m : 0.0f,
+                entries[i].gps_valid ? entries[i].hdop : 0.0f);
     }
 
     fflush(f);
     fsync(fileno(f));
     fclose(f);
-    ESP_LOGI(TAG, "Wrote %d/%d AP rows to %s", written, count, g_log_path);
-    return written;
+    ESP_LOGI(TAG, "Wrote %d AP rows to %s", count, g_log_path);
 }
 
 static void flush_dirty_entries_if_needed(bool force, uint32_t min_dirty, uint32_t min_interval_ms)
@@ -1092,28 +1018,36 @@ static void flush_dirty_entries_if_needed(bool force, uint32_t min_dirty, uint32
         return;
     }
 
-    int copied = copy_dirty_entries(g_flush_buf, FLUSH_BATCH_APS);
+    int copied = copy_dirty_entries(g_flush_buf, MAX_SEEN_APS);
     if (copied <= 0) {
         return;
     }
 
-    int written = write_entries_to_log(g_flush_buf, copied);
-    if (written == copied) {
-        mark_entries_clean(g_flush_buf, copied);
-        last_flush_ms = now_ms;
-    }
+    write_entries_to_log(g_flush_buf, copied);
+    last_flush_ms = now_ms;
 
     ESP_LOGI(TAG,
-             "Flush result: copied=%d written=%d (seen=%" PRIu32 ", dedup=%" PRIu32 ", dropped=%" PRIu32 ")",
-             copied, written, seen_count, dedup_hits, dropped);
+             "Flushed %d AP rows to log (seen=%" PRIu32 ", dedup=%" PRIu32 ", dropped=%" PRIu32 ")",
+             copied, seen_count, dedup_hits, dropped);
 }
 
-static uint32_t run_scan_channel(uint8_t channel, const gps_state_t *gps, bool gps_ok, uint32_t min_ms, uint32_t max_ms)
+static void run_scan_cycle(void)
 {
+    gps_state_t gps = {0};
+    bool gps_ok = gps_is_fresh_and_valid(&gps);
+    if (!gps_ok) {
+        wait_for_gps_recovery();
+        gps_ok = gps_is_fresh_and_valid(&gps);
+    }
+
+    uint32_t min_ms = 0;
+    uint32_t max_ms = 0;
+    get_channel_times(&min_ms, &max_ms);
+
     wifi_scan_config_t scan_cfg = {
         .ssid = NULL,
         .bssid = NULL,
-        .channel = channel,
+        .channel = 0,
         .show_hidden = true,
         .scan_type = WIFI_SCAN_TYPE_ACTIVE,
         .scan_time.active.min = min_ms,
@@ -1122,38 +1056,39 @@ static uint32_t run_scan_channel(uint8_t channel, const gps_state_t *gps, bool g
 
     esp_err_t s = esp_wifi_scan_start(&scan_cfg, true);
     if (s != ESP_OK) {
-        ESP_LOGW(TAG, "5GHz scan start failed on channel %u: %s", (unsigned)channel, esp_err_to_name(s));
-        vTaskDelay(pdMS_TO_TICKS(50));
-        return 0;
+        ESP_LOGW(TAG, "scan start failed: %s", esp_err_to_name(s));
+        vTaskDelay(pdMS_TO_TICKS(500));
+        return;
     }
 
     uint16_t ap_count = 0;
     esp_err_t c = esp_wifi_scan_get_ap_num(&ap_count);
     if (c != ESP_OK) {
-        ESP_LOGW(TAG, "5GHz scan get ap num failed on channel %u: %s", (unsigned)channel, esp_err_to_name(c));
-        return 0;
+        ESP_LOGW(TAG, "scan get ap num failed: %s", esp_err_to_name(c));
+        return;
     }
     if (ap_count == 0) {
-        return 0;
+        ESP_LOGW(TAG, "No APs found in this scan");
+        return;
     }
 
     wifi_ap_record_t *recs = calloc(ap_count, sizeof(wifi_ap_record_t));
     if (!recs) {
         ESP_LOGE(TAG, "scan alloc failed for %u records", (unsigned)ap_count);
-        return 0;
+        return;
     }
 
     c = esp_wifi_scan_get_ap_records(&ap_count, recs);
     if (c != ESP_OK) {
-        ESP_LOGW(TAG, "5GHz scan get records failed on channel %u: %s", (unsigned)channel, esp_err_to_name(c));
+        ESP_LOGW(TAG, "scan get records failed: %s", esp_err_to_name(c));
         free(recs);
-        return 0;
+        return;
     }
 
     portENTER_CRITICAL(&g_seen_lock);
     for (int i = 0; i < ap_count; i++) {
         char ssid_local[33] = {0};
-        size_t ssid_len = strnlen((const char *)recs[i].ssid, sizeof(recs[i].ssid));
+        size_t ssid_len = strnlen((const char *)recs[i].ssid, 32);
         if (ssid_len > 32) ssid_len = 32;
         memcpy(ssid_local, recs[i].ssid, ssid_len);
         ssid_local[ssid_len] = '\0';
@@ -1164,39 +1099,23 @@ static uint32_t run_scan_channel(uint8_t channel, const gps_state_t *gps, bool g
             recs[i].primary,
             (int8_t)recs[i].rssi,
             recs[i].authmode,
-            gps,
+            &gps,
             gps_ok
         );
     }
     portEXIT_CRITICAL(&g_seen_lock);
 
     free(recs);
-    return ap_count;
-}
-
-static void run_scan_cycle(void)
-{
-    gps_state_t gps = {0};
-    bool gps_ok = gps_is_fresh_and_valid(&gps);
-
-    uint32_t min_ms = 0;
-    uint32_t max_ms = 0;
-    get_channel_times(&min_ms, &max_ms);
-
-    uint32_t total_ap_count = 0;
-    for (int i = 0; i < (int)PROMISC_5_NON_DFS_COUNT; i++) {
-        total_ap_count += run_scan_channel(promisc_ch_5_non_dfs[i], &gps, gps_ok, min_ms, max_ms);
-    }
-    for (int i = 0; i < (int)PROMISC_5_DFS_COUNT; i++) {
-        total_ap_count += run_scan_channel(promisc_ch_5_dfs[i], &gps, gps_ok, min_ms, max_ms);
-    }
-
-    ESP_LOGI(TAG, "5GHz scan mode: processed %" PRIu32 " APs (channel_time min=%u max=%u)",
-             total_ap_count, (unsigned)min_ms, (unsigned)max_ms);
+    ESP_LOGI(TAG, "scan mode: processed %u APs (channel_time min=%u max=%u)", (unsigned)ap_count, (unsigned)min_ms, (unsigned)max_ms);
 }
 
 static void run_promisc_cycle(void)
 {
+    gps_state_t gps = {0};
+    if (!gps_is_fresh_and_valid(&gps)) {
+        wait_for_gps_recovery();
+    }
+
     int idx = ducb_select_index();
     int channel = g_ducb_channels[idx].channel;
     int dwell_ms = dwell_ms_for_tier(g_ducb_channels[idx].tier);
@@ -1217,7 +1136,7 @@ static void run_promisc_cycle(void)
 static void init_seen_buffers(void)
 {
     g_seen_aps = calloc(MAX_SEEN_APS, sizeof(seen_ap_t));
-    g_flush_buf = calloc(FLUSH_BATCH_APS, sizeof(seen_ap_t));
+    g_flush_buf = calloc(MAX_SEEN_APS, sizeof(seen_ap_t));
     if (!g_seen_aps || !g_flush_buf) {
         ESP_LOGE(TAG, "Failed to allocate dedup buffers");
         abort();
@@ -1227,7 +1146,6 @@ static void init_seen_buffers(void)
 static void print_help(void)
 {
     printf("\nCommands:\n");
-    printf("  C5 scans/logs 5GHz; C6 streams 2.4GHz as AP24 records\n");
     printf("  help\n");
     printf("  status\n");
     printf("  mode read\n");
@@ -1252,14 +1170,12 @@ static void print_status(void)
     uint32_t dedup = 0;
     uint32_t discovered = 0;
     uint32_t dropped = 0;
-    uint32_t remote24 = 0;
 
     portENTER_CRITICAL(&g_seen_lock);
     seen = (uint32_t)g_seen_count;
     discovered = g_total_new_aps;
     dedup = g_total_dedup_hits;
     dropped = g_total_dropped_aps;
-    remote24 = g_total_remote_24_aps;
     for (int i = 0; i < g_seen_count; i++) {
         if (g_seen_aps[i].dirty) {
             dirty++;
@@ -1268,7 +1184,7 @@ static void print_status(void)
     portEXIT_CRITICAL(&g_seen_lock);
 
     ESP_LOGI(TAG,
-             "status: mode=%s gps=%s lat=%.6f lon=%.6f sats=%d log=%s channel_time[min=%u,max=%u] seen=%" PRIu32 " dirty=%" PRIu32 " new=%" PRIu32 " remote24=%" PRIu32 " dedup=%" PRIu32 " dropped=%" PRIu32,
+             "status: mode=%s gps=%s lat=%.6f lon=%.6f sats=%d log=%s channel_time[min=%u,max=%u] seen=%" PRIu32 " dirty=%" PRIu32 " new=%" PRIu32 " dedup=%" PRIu32 " dropped=%" PRIu32,
              mode,
              gps_ok ? "ok" : "lost",
              gps.lat,
@@ -1280,7 +1196,6 @@ static void print_status(void)
              seen,
              dirty,
              discovered,
-             remote24,
              dedup,
              dropped);
 }
@@ -1422,11 +1337,7 @@ static void uart_rx_task(void *arg)
 
         if (b == '\n') {
             line[idx] = '\0';
-            if (strncmp(line, "GPS,", 4) == 0) {
-                parse_gps_line(line);
-            } else if (strncmp(line, "AP24,", 5) == 0) {
-                parse_remote_ap24_line(line);
-            }
+            parse_gps_line(line);
             idx = 0;
             continue;
         }
@@ -1470,12 +1381,12 @@ static void wardrive_task(void *arg)
                 promisc_on = true;
 
                 ESP_LOGI(TAG,
-                         "5GHz promisc wardrive started. Channels=%d (nonDFS:%d DFS:%d dwell=%d/%dms)",
+                         "Promisc wardrive started. Channels=%d (primary:%d secondary:%d 5G:%d DFS:%d)",
                          g_ducb_channel_count,
+                         (int)PROMISC_24_PRIMARY_COUNT,
+                         (int)PROMISC_24_SECONDARY_COUNT,
                          (int)PROMISC_5_NON_DFS_COUNT,
-                         (int)PROMISC_5_DFS_COUNT,
-                         DWELL_5_NON_DFS_MS,
-                         DWELL_5_DFS_MS);
+                         (int)PROMISC_5_DFS_COUNT);
             }
 
             run_promisc_cycle();
@@ -1501,18 +1412,22 @@ static void wardrive_task(void *arg)
 
 void app_main(void)
 {
-    init_seen_buffers();
     init_link_uart();
     xTaskCreate(uart_rx_task, "uart_rx_task", 4096, NULL, 8, NULL);
 
-    ESP_LOGI(TAG, "Stage 1/3: waiting for SD card mount");
+    ESP_LOGI(TAG, "Stage 1/4: waiting for SD card mount");
     wait_for_sd_ready();
 
-    ESP_LOGI(TAG, "Stage 2/3: init NVS + Wi-Fi");
+    ESP_LOGI(TAG, "Stage 2/4: waiting for valid GPS fix from C6");
+    wait_for_gps_fix_startup();
+
+    ESP_LOGI(TAG, "Stage 3/4: init NVS + Wi-Fi");
     ESP_ERROR_CHECK(init_nvs_wifi());
     channel_time_load_state_from_nvs();
 
-    ESP_LOGI(TAG, "Stage 3/3: starting wardrive engine (C5=5GHz promisc, C6=2.4GHz AP24 ingest)");
+    init_seen_buffers();
+
+    ESP_LOGI(TAG, "Stage 4/4: starting wardrive engine (default mode=promisc)");
     xTaskCreate(wardrive_task, "wardrive_task", 8192, NULL, 5, NULL);
     xTaskCreate(command_task, "command_task", 6144, NULL, 2, NULL);
 }
