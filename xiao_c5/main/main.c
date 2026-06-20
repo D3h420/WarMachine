@@ -60,6 +60,7 @@
 #define DEFAULT_SCAN_MAX_TIME_MS  300
 
 #define MAX_SEEN_APS              1024
+#define FLUSH_BATCH_APS           96
 
 static const char *TAG = "C5_LOGGER";
 static const char *MOUNT_POINT = "/sdcard";
@@ -794,6 +795,7 @@ static bool seen_upsert_unsafe(const uint8_t bssid[6],
             g_seen_aps[idx].alt_m = gps->alt_m;
             g_seen_aps[idx].hdop = gps->hdop;
             g_seen_aps[idx].gps_valid = true;
+            format_first_seen(gps, g_seen_aps[idx].first_seen);
             changed = true;
         }
 
@@ -1112,7 +1114,7 @@ static void flush_dirty_entries_if_needed(bool force, uint32_t min_dirty, uint32
         return;
     }
 
-    int copied = copy_dirty_entries(g_flush_buf, MAX_SEEN_APS);
+    int copied = copy_dirty_entries(g_flush_buf, FLUSH_BATCH_APS);
     if (copied <= 0) {
         return;
     }
@@ -1230,11 +1232,20 @@ static void run_promisc_cycle(void)
 static void init_seen_buffers(void)
 {
     g_seen_aps = calloc(MAX_SEEN_APS, sizeof(seen_ap_t));
-    g_flush_buf = calloc(MAX_SEEN_APS, sizeof(seen_ap_t));
+    g_flush_buf = calloc(FLUSH_BATCH_APS, sizeof(seen_ap_t));
     if (!g_seen_aps || !g_flush_buf) {
-        ESP_LOGE(TAG, "Failed to allocate dedup buffers");
+        ESP_LOGE(TAG,
+                 "Failed to allocate dedup buffers: seen=%u flush=%u free_heap=%u",
+                 (unsigned)(MAX_SEEN_APS * sizeof(seen_ap_t)),
+                 (unsigned)(FLUSH_BATCH_APS * sizeof(seen_ap_t)),
+                 (unsigned)esp_get_free_heap_size());
         abort();
     }
+    ESP_LOGI(TAG,
+             "Dedup buffers ready: seen=%u flush=%u free_heap=%u",
+             (unsigned)(MAX_SEEN_APS * sizeof(seen_ap_t)),
+             (unsigned)(FLUSH_BATCH_APS * sizeof(seen_ap_t)),
+             (unsigned)esp_get_free_heap_size());
 }
 
 static void print_help(void)
